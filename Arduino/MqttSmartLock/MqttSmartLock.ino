@@ -19,15 +19,17 @@
  */
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <HTTPUpdate.h>
 
 // ====== 請修改這裡 ======
-const char* WIFI_SSID = "TOTOLINK_A8004T_5G";
+const char* WIFI_SSID = "TOTOLINK_A8004T";
 const char* WIFI_PASS = "sherry8088";
 const char* MQTT_BROKER = "192.168.1.3";  // 跑 mosquitto 的電腦 IP
 const int   MQTT_PORT = 1883;
 // ========================
 
 #define MODEL "SMART-LOCK-V1"
+#define FW_VERSION "1.0.0"  // 每次燒錄新版本記得改，OTA 後可從序列埠確認是否真的更新成功
 
 // 腳位（測試板：relay 用 LED 代替，按鈕用觸控腳代替）
 #define PIN_RELAY_LED   15  // relay 替代 LED
@@ -53,11 +55,12 @@ WiFiClient espClient;
 PubSubClient mqtt(espClient);
 
 String macAddr;          // 例如 "A4:CF:12:34:56:78"
-String topicConfig, topicCmd, topicState, topicEvent;
+String topicConfig, topicCmd, topicState, topicEvent, topicOta;
 
 bool locked = true;           // 預設鎖上（models.yaml: default_state: locked）
 int  autoLockSec = 5;         // 會被 server 回傳的 config 覆蓋
 unsigned long unlockAt = 0;   // 開鎖時間，用來計算自動上鎖
+bool registered = false;     // 本次開機是否已送過 register，斷線重連不再重送
 
 // ---------- 狀態控制 ----------
 void applyLockState(bool newLocked) {
@@ -77,11 +80,44 @@ void publishEvent(const char* type) {
   Serial.println("[EVENT] " + payload);
 }
 
+// ---------- OTA 更新 ----------
+void handleOta(const String& msg) {
+  int idx = msg.indexOf("\"url\":\"");
+  if (idx < 0) {
+    Serial.println("[OTA] 訊息裡找不到 url，略過");
+    return;
+  }
+  int start = idx + 7;
+  int end = msg.indexOf('"', start);
+  String url = msg.substring(start, end);
+  Serial.println("[OTA] 開始下載更新: " + url);
+
+  httpUpdate.rebootOnUpdate(true);  // 成功會自動重開機
+  t_httpUpdate_return ret = httpUpdate.update(espClient, url);
+  switch (ret) {
+    case HTTP_UPDATE_FAILED:
+      Serial.printf("[OTA] 失敗 (%d): %s\n", httpUpdate.getLastError(),
+                    httpUpdate.getLastErrorString().c_str());
+      break;
+    case HTTP_UPDATE_NO_UPDATES:
+      Serial.println("[OTA] 伺服器回應無更新內容");
+      break;
+    case HTTP_UPDATE_OK:
+      Serial.println("[OTA] 成功，準備重開機");  // rebootOnUpdate 通常會直接重開，這行不一定看得到
+      break;
+  }
+}
+
 // ---------- MQTT 訊息處理 ----------
 void onMqttMessage(char* topic, byte* payload, unsigned int length) {
   String msg;
   for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
   Serial.println("[RECV] " + String(topic) + " → " + msg);
+
+  if (topicOta.equals(topic)) {
+    handleOta(msg);
+    return;
+  }
 
   if (topicConfig.equals(topic)) {
     // 只取 auto_lock_sec，其他設定目前用不到
@@ -113,11 +149,17 @@ void connectMqtt() {
       Serial.println("成功");
       mqtt.subscribe(topicConfig.c_str());
       mqtt.subscribe(topicCmd.c_str());
+      mqtt.subscribe(topicOta.c_str());
 
-      // 發送註冊，server 會回 config（retained）
-      String reg = String("{\"model\":\"") + MODEL + "\",\"mac\":\"" + macAddr + "\"}";
-      mqtt.publish("home/register", reg.c_str());
-      Serial.println("[REGISTER] " + reg);
+      // 發送註冊，server 會回 config（retained）— 已註冊過就不重送，避免斷線重連時重複註冊
+      if (!registered) {
+        String reg = String("{\"model\":\"") + MODEL + "\",\"mac\":\"" + macAddr + "\"}";
+        mqtt.publish("home/register", reg.c_str());
+        Serial.println("[REGISTER] " + reg);
+        registered = true;
+      } else {
+        Serial.println("[REGISTER] 已註冊過，略過");
+      }
 
       // 回報目前狀態
       applyLockState(locked);
@@ -144,11 +186,13 @@ void setup() {
   }
   macAddr = WiFi.macAddress();
   Serial.println("\n[WiFi] IP: " + WiFi.localIP().toString() + "  MAC: " + macAddr);
+  Serial.println("[BOOT] 韌體版本 " FW_VERSION);
 
   topicConfig = "home/device/" + macAddr + "/config";
   topicCmd    = "home/device/" + macAddr + "/cmd";
   topicState  = "home/device/" + macAddr + "/state";
   topicEvent  = "home/device/" + macAddr + "/event";
+  topicOta    = "home/device/" + macAddr + "/ota";
 
   // 觸控腳校準（此時不要碰 GPIO27 / GPIO32）
   doorbellBase = touchBaseline(TOUCH_DOORBELL);

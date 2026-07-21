@@ -6,6 +6,7 @@ MQTT IoT 網頁監控伺服器
 """
 import asyncio
 import json
+import os
 import time
 import threading
 from pathlib import Path
@@ -19,7 +20,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-BROKER = "localhost"
+BROKER = os.getenv("MQTT_BROKER", "localhost")
 DEVICES_FILE = Path("devices.json")
 MODELS: dict = yaml.safe_load(open("models.yaml")) if Path("models.yaml").exists() else {}
 
@@ -471,4 +472,5 @@ connectWS();
 """
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")
+    # 8080 給 main.py 的 OTA 韌體檔案伺服器用了，monitor 改走 8090
+    uvicorn.run(app, host="0.0.0.0", port=8090, log_level="warning")

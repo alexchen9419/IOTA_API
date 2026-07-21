@@ -1,13 +1,29 @@
 import json
 import os
 import time
+import threading
 import importlib
+from pathlib import Path
 import paho.mqtt.client as mqtt
 from paho.mqtt.enums import CallbackAPIVersion
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+import uvicorn
 import registry
 
 BROKER = os.getenv("MQTT_BROKER", "localhost")
 active_handlers = {}  # mac → handler module
+
+# ── OTA 韌體檔案伺服器（http://<host>:8080/firmware/<file>.bin）──────────────
+FIRMWARE_DIR = Path(__file__).parent / "firmware"
+FIRMWARE_DIR.mkdir(exist_ok=True)
+
+http_app = FastAPI()
+http_app.mount("/firmware", StaticFiles(directory=FIRMWARE_DIR), name="firmware")
+
+
+def _start_http_server():
+    uvicorn.run(http_app, host="0.0.0.0", port=8080, log_level="warning")
 
 
 def on_connect(client, userdata, connect_flags, reason_code, properties):
@@ -60,4 +76,5 @@ while True:
         print(f"[INFO] Broker ({BROKER}) 未就緒: {e}，2 秒後重試")
         time.sleep(2)
 
+threading.Thread(target=_start_http_server, daemon=True).start()
 client.loop_forever()

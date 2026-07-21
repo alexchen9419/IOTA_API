@@ -5,3 +5,5 @@ wokwi/
 .vscode
 # Arduino build output
 Arduino/build/
+# OTA 韌體檔案（.bin 太大且是編譯產物，不進版控）
+mqtt-server/firmware/*.bin
