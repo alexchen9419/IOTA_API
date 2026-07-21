@@ -1,0 +1,21 @@
+SMART-LOCK-V1:
+  features: [lock, doorbell, tamper_detect]
+  pins:
+    relay: 26
+    doorbell: 27
+    tamper: 25
+    status_led: 2
+  default_state: locked
+  auto_lock_sec: 5
+  handler: lock
+
+SMART-STRONGBOX-V1:
+  features: [lock, alarm, tamper_detect]
+  pins:
+    relay: 26
+    alarm: 27
+    tamper: 25
+    status_led: 2
+  default_state: locked
+  auto_lock_sec: 5
+  handler: strongbox

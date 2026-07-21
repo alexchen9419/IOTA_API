@@ -1,0 +1,7 @@
+/data/
+/log/
+.DS_Store
+wokwi/
+.vscode
+# Arduino build output
+Arduino/build/

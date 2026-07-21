@@ -1,0 +1,22 @@
+{
+  "AA:BB:CC:DD:EE:FF": {
+    "model": "SMART-LOCK-V1",
+    "last_seen": 1778743092.0609632,
+    "online": true
+  },
+  "11:22:33:44:55:66": {
+    "model": "SMART-LOCK-V1",
+    "last_seen": 1779691484.2305164,
+    "online": true
+  },
+  "11:11:11:11:11:11": {
+    "model": "SMART-STRONGBOX-V1",
+    "last_seen": 1784626713.3365092,
+    "online": true
+  },
+  "E8:31:CD:82:80:C8": {
+    "model": "SMART-LOCK-V1",
+    "last_seen": 1784633642.350624,
+    "online": true
+  }
+}

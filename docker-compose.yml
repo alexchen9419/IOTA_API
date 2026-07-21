@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  mqtt-broker:
+    image: eclipse-mosquitto:latest
+    container_name: mqtt_service
+    restart: always
+    ports:
+      - "1883:1883"   # MQTT 標準連接埠
+      - "9001:9001"   # WebSocket 連接埠 (選配)
+    volumes:
+      - ./config:/mosquitto/config
+      - ./data:/mosquitto/data
+      - ./log:/mosquitto/log
+    networks:
+      - mqtt-net
+
+  mqtt-server:
+    build: ./mqtt-server
+    container_name: mqtt_server
+    restart: always
+    environment:
+      - MQTT_BROKER=mqtt-broker
+    volumes:
+      - ./mqtt-server:/app   # 掛整個目錄：改 code 後 restart 生效，devices.json 保留在本機
+    depends_on:
+      - mqtt-broker
+    networks:
+      - mqtt-net
+
+  node-red:
+    image: nodered/node-red:latest
+    container_name: node_red
+    restart: always
+    ports:
+      - "1880:1880"   # Node-RED 編輯器
+    volumes:
+      - ./node-red-data:/data
+    environment:
+      - TZ=Asia/Taipei
+    depends_on:
+      - mqtt-broker
+    networks:
+      - mqtt-net
+
+networks:
+  mqtt-net:
+    driver: bridge
