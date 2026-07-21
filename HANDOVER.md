@@ -43,6 +43,7 @@ docker logs -f mqtt_server        # 應印出「Broker 連線成功」
 1. `mqtt-server/Dockerfile` 裡 pip 的 `--trusted-host` 參數是因為原開發機網路有 HTTPS 憑證攔截，**新環境網路正常的話建議拿掉**
 2. 防火牆開 TCP 1883（ESP32 要連入）、1880（Node-RED 編輯器）
 3. 查新主機區網 IP（`ip addr`），更新 Arduino sketch 的 `MQTT_BROKER` 後重新燒錄
+4. 換行符：repo 已加 `.gitattributes` 強制全部文字檔用 LF（不管 clone 那台機器的 `core.autocrlf` 設定），在 Linux 上 clone/checkout 不會有 CRLF 問題；純粹是保險措施，不代表遷移前需要額外處理
 
 ## Arduino 端
 
@@ -129,7 +130,18 @@ mqtt-server/
   firmware/               # OTA 韌體檔案（.bin 不進版控），http://<host>:8080/firmware/ 提供下載
   Dockerfile              # python:3.12-slim（注意 --trusted-host 註記）
 Arduino/MqttSmartLock/    # ESP32 測試韌體
+API/                      # 家庭/裝置管理 CGI 後端，見「API 整合」章節
 ```
+
+## API 整合（`api` / `api-mqtt-bridge` / `mysql`）
+
+`API/` 原本完全沒有部署設定、也沒接過 `mqtt-server`。現在：
+
+- `mysql` 容器啟動時自動跑 `API/schema.sql` 建表（`devicemanagement` DB）
+- `api` 容器跑 `API/gateway.py`（FastAPI），把 12 支 CGI 腳本包成 `http://<host>:8091/<endpoint>` 的 HTTP API
+- `api-mqtt-bridge` 容器跑新增的 `API/control_device/mqtt_topic_bridge.py`，把 `control_device.py`／`mqtt_status_worker.py` 原本假設的 `home/{family_id}/device/{device_id}/...` topic 跟 `mqtt-server` 實測過的 `home/device/<mac>/...` 接起來（細節見 README「API 後端」章節）——**`control_device.py` 和 `mqtt_status_worker.py` 本身完全沒改**，都是新增橋接腳本處理
+
+已用真實 ESP32 的 MAC（`E8:31:CD:82:80:C8`）走過一次完整驗證：`register` → `login` → 手動建 `families` → `device_pair` → `control_device`(action=UNLOCK) → 橋接轉成 `unlock` 送到 `home/device/<mac>/cmd` → 模擬 `state`/`event` 回報 → `dashboard` 正確顯示 `physical_state=UNLOCKED`。
 
 ## 待辦
 
@@ -138,3 +150,7 @@ Arduino/MqttSmartLock/    # ESP32 測試韌體
 3. handlers 的 TODO：doorbell 推播通知（Telegram / ntfy）、tamper 緊急警報
 4. Node-RED flow 接上 `home/#` 主題做視覺化（node_red 容器已在 compose 裡）
 5. 正式硬體：relay 改回 GPIO26、實體按鈕取代觸控腳，讓韌體改讀 config 回傳的 `pins` 而不是寫死
+6. `API/` 沒有「建立家庭」的 endpoint，目前得手動 `INSERT INTO families`，之後要補一支
+7. `docker-compose.yml` 裡 MySQL 的帳密（`devroot123`/`devpass123`）是本機開發用預設值，正式環境要換成真的密碼並考慮不要 commit 進 repo
+8. `control_device.py` 走 `mqtt` 模式目前只支援 `LOCK`/`UNLOCK`，其餘動作韌體不支援，橋接會直接丟棄
+9. `respond_invitation.py` / `generate_guest_qr.py` 發布的 `home/security/gateway_{family_id}/auth_sync` 沒有任何 subscriber，是死代碼，之後要嘛接上要嘛清掉

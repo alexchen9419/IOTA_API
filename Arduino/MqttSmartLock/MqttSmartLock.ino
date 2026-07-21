@@ -22,8 +22,8 @@
 #include <HTTPUpdate.h>
 
 // ====== 請修改這裡 ======
-const char* WIFI_SSID = "TOTOLINK_A8004T";
-const char* WIFI_PASS = "sherry8088";
+const char* WIFI_SSID = "SSID";
+const char* WIFI_PASS = "PWD";
 const char* MQTT_BROKER = "192.168.1.3";  // 跑 mosquitto 的電腦 IP
 const int   MQTT_PORT = 1883;
 // ========================

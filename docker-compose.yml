@@ -46,6 +46,76 @@ services:
     networks:
       - mqtt-net
 
+  mysql:
+    image: mysql:8.0
+    container_name: iot_mysql
+    restart: always
+    environment:
+      - MYSQL_ROOT_PASSWORD=devroot123
+      - MYSQL_DATABASE=devicemanagement
+      - MYSQL_USER=apiuser
+      - MYSQL_PASSWORD=devpass123
+    ports:
+      - "3306:3306"   # 方便本機用 DB client 連進去看資料，非必要可拿掉
+    volumes:
+      - ./mysql-data:/var/lib/mysql
+      - ./API/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-pdevroot123"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - mqtt-net
+
+  api:
+    build: ./API
+    container_name: iot_api
+    restart: always
+    environment:
+      - DB_HOST=mysql
+      - DB_USER=apiuser
+      - DB_PASS=devpass123
+      - DB_PASSWORD=devpass123
+      - DB_NAME=devicemanagement
+      - CONTROL_MODE=mqtt
+      - MQTT_HOST=mqtt-broker
+      - MQTT_PORT=1883
+    ports:
+      - "8091:8000"   # 家庭/裝置管理 API（見 API/gateway.py 的路由列表）
+    volumes:
+      - ./API:/app
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mqtt-broker:
+        condition: service_started
+    networks:
+      - mqtt-net
+
+  api-mqtt-bridge:
+    build: ./API
+    container_name: iot_api_mqtt_bridge
+    restart: always
+    command: ["python", "-u", "control_device/mqtt_topic_bridge.py"]
+    environment:
+      - DB_HOST=mysql
+      - DB_USER=apiuser
+      - DB_PASS=devpass123
+      - DB_PASSWORD=devpass123
+      - DB_NAME=devicemanagement
+      - MQTT_HOST=mqtt-broker
+      - MQTT_PORT=1883
+    volumes:
+      - ./API:/app
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mqtt-broker:
+        condition: service_started
+    networks:
+      - mqtt-net
+
 networks:
   mqtt-net:
     driver: bridge
