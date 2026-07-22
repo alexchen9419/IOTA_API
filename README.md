@@ -55,22 +55,28 @@ docker logs -f mqtt_server        # 應印出「Broker 連線成功」
 docker exec -d mqtt_server python -u web_monitor.py
 ```
 
-## OTA 更新
+## OTA 更新（含簽章驗證）
 
-Arduino IDE 只能透過 USB 燒錄，要 OTA 需先「匯出編譯後的二進位檔」拿到 `.bin`：
+韌體更新一定要簽章，ESP32 收到沒簽章或簽章不符的 `.bin` 會直接拒絕、不燒錄：
 
 ```bash
+# 0.（只需一次）產生簽章金鑰對，印出的公鑰貼進 Arduino sketch 的 OTA_PUBLIC_KEY
+docker exec mqtt_server python ota_keys/generate_keypair.py
+
 # 1. Arduino IDE：草稿碼 → 匯出已編譯的二進位檔，把 .bin 複製到 mqtt-server/firmware/
-# 2. 觸發 OTA
+# 2. 簽章
+docker exec mqtt_server python sign_firmware.py firmware/<檔名.bin>
+# 3. 觸發 OTA
 docker exec mqtt_server python test_ota.py <mac> <檔名.bin> <版本號>
 ```
 
-裝置會透過 `HTTPUpdate` 下載 `.bin` 並自動燒錄、重開機。詳細注意事項見 [HANDOVER.md](HANDOVER.md#ota-更新新加尚未在實體-esp32-上驗證過)。
+裝置端邊下載 `.bin` 邊寫入 OTA 分區、邊累加 SHA-256（不會把整包放進記憶體），下載完用內建公鑰驗證 Ed25519 簽章，通過才切換開機分區重開機；驗證失敗就中止，繼續跑原本的韌體，不會變磚。完整步驟跟疑難排解見 [Arduino/MqttSmartLock/OTA.md](Arduino/MqttSmartLock/OTA.md)，架構背景見 [HANDOVER.md](HANDOVER.md#ota-更新新加尚未在實體-esp32-上驗證過簽章驗證邏輯已寫完但也還沒真機測過)。
 
 ## Arduino 端
 
 - Sketch：`Arduino/MqttSmartLock/MqttSmartLock.ino`（repo 版的 WiFi 帳密是佔位字串，**帳密不要 commit**）
 - 板子：ESP32 Dev Module，序列埠 115200
+- 需要安裝：**PubSubClient 2.8** + **Crypto**（Rhys Weatherley，`Ed25519.h`，OTA 簽章驗證用）；`HTTPClient`/`Update`/`mbedtls` 是 ESP32 core 內建
 - 需要安裝：**PubSubClient 2.8**（knolleary）；`HTTPUpdate.h` 是 ESP32 core 內建，不用額外裝
 
 ## 常用測試指令

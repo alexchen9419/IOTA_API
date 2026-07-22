@@ -48,7 +48,7 @@ docker logs -f mqtt_server        # 應印出「Broker 連線成功」
 ## Arduino 端
 
 - Sketch：`Arduino/MqttSmartLock/MqttSmartLock.ino`（repo 版的 WiFi 帳密是佔位字串，**帳密不要 commit**）
-- 程式庫：**PubSubClient 2.8**（knolleary），IDE 程式庫管理員搜尋安裝即可；`HTTPUpdate.h`（OTA 用）是 ESP32 core 內建，不用額外安裝
+- 程式庫：**PubSubClient 2.8**（knolleary）+ **Crypto**（Rhys Weatherley，提供 `Ed25519.h`，OTA 簽章驗證用），IDE 程式庫管理員搜尋安裝即可；`HTTPClient.h`/`Update.h`/`mbedtls/sha256.h` 是 ESP32 core 內建，不用額外安裝
 - 板子：ESP32 Dev Module，序列埠 115200
 - 測試板腳位（relay 用 LED 代替、按鈕用觸控腳代替）：
 
@@ -71,18 +71,24 @@ docker logs -f mqtt_server        # 應印出「Broker 連線成功」
 4. 讀值完全不動 → 手指沒接觸到金屬，插一條杜邦線到腳位、摸金屬頭
 5. 確認 OK 後可刪掉 loop 裡的 `[TOUCH]` debug 輸出區塊
 
-## OTA 更新（新加，尚未在實體 ESP32 上驗證過）
+## OTA 更新（新加，尚未在實體 ESP32 上驗證過；簽章驗證邏輯已寫完但也還沒真機測過）
 
-流程：把編譯好的 `.bin` 丟進 `mqtt-server/firmware/` → 對指定裝置發送 `home/device/<mac>/ota`（帶下載網址）→ ESP32 用 `HTTPUpdate` 下載並自動燒錄、重開機。
+流程：韌體簽章 → 丟進 `mqtt-server/firmware/` → 對指定裝置發送 `home/device/<mac>/ota`（帶下載網址）→ ESP32 邊下載邊算 SHA-256、寫入 OTA 分區 → 下載完驗證 Ed25519 簽章 → 通過才切換分區、重開機；驗證失敗就中止，繼續跑原本的韌體。完整步驟、疑難排解見 [Arduino/MqttSmartLock/OTA.md](Arduino/MqttSmartLock/OTA.md)。
 
 ```bash
+# 0.（只需要做一次）產生簽章金鑰對，公鑰要貼進 Arduino sketch 的 OTA_PUBLIC_KEY
+docker exec mqtt_server python ota_keys/generate_keypair.py
+
 # 1. Arduino IDE：草稿碼 → 匯出編譯二進位檔，把產生的 .bin 複製到 mqtt-server/firmware/，
 #    建議照 mqtt-server/firmware/README.md 的命名慣例改檔名
 
-# 2. 觸發 OTA（mac / 檔名 / 版本號都可省略，用預設值）
-docker exec mqtt_server python test_ota.py E8:31:CD:82:80:C8 SMART-LOCK-V1.bin 1.1.0
+# 2. 簽章（沒簽過的 .bin，ESP32 會直接拒絕更新）
+docker exec mqtt_server python sign_firmware.py firmware/SMART-LOCK-V1_1.1.0.bin
 
-# 3. 序列埠應該會看到 [OTA] 開始下載更新 → 燒錄 → 自動重開機 → 重新連線註冊
+# 3. 觸發 OTA（mac / 檔名 / 版本號都可省略，用預設值）
+docker exec mqtt_server python test_ota.py E8:31:CD:82:80:C8 SMART-LOCK-V1_1.1.0.bin 1.1.0
+
+# 4. 序列埠應該會看到 [OTA] 下載簽章 → 下載韌體 → SHA-256 → 簽章驗證通過 → 自動重開機 → 重新連線註冊
 ```
 
 注意事項：
@@ -90,6 +96,8 @@ docker exec mqtt_server python test_ota.py E8:31:CD:82:80:C8 SMART-LOCK-V1.bin 1
 - `test_ota.py` 裡的 `OTA_HOST`（預設 `192.168.1.3`）要跟 Arduino sketch 的 `MQTT_BROKER` 是同一台機器的區網 IP，因為 ESP32 是直接對這個位址發 HTTP GET 下載 `.bin`，容器內部 IP 對外部裝置沒用
 - `docker-compose.yml` 已把 mqtt-server 的 `8080` 對外開放；換機器/換網路記得防火牆也要開這個 port
 - 目前沒有版本比對機制，`version` 欄位只是紀錄用，server 端不會檢查裝置目前版本就直接觸發更新
+- **簽章私鑰**（`mqtt-server/ota_keys/ota_signing_key.pem`）已加進 `.gitignore`，不會進版控；換一台開發機記得把這個檔案帶過去，不然舊裝置上的公鑰會對不起來，之後簽的韌體全部推不動
+- Arduino 端要額外裝 **Crypto**（by Rhys Weatherley）函式庫才有 `Ed25519.h`；`HTTPClient`/`Update`/`mbedtls` 是 ESP32 core 內建的，不用額外裝
 - 燒錄失敗（例如網路中斷、韌體檔案損毀）ESP32 會維持原韌體並印 `[OTA] 失敗`，不會變磚，可以重新觸發
 
 ## 常用指令
@@ -127,7 +135,9 @@ mqtt-server/
   handlers/lock.py        # lock 型號的 state/event 處理
   handlers/strongbox.py   # strongbox 型號
   test_*.py               # 測試腳本（都吃 MQTT_BROKER 環境變數）
-  firmware/               # OTA 韌體檔案（.bin 不進版控），http://<host>:8080/firmware/ 提供下載
+  firmware/               # OTA 韌體檔案（.bin/.sig 不進版控），http://<host>:8080/firmware/ 提供下載
+  sign_firmware.py        # 對韌體 SHA-256 做 Ed25519 簽章，輸出 .sig
+  ota_keys/               # generate_keypair.py + 私鑰（.pem 不進版控，公鑰 .h 可進版控）
   Dockerfile              # python:3.12-slim（注意 --trusted-host 註記）
 Arduino/MqttSmartLock/    # ESP32 測試韌體
 API/                      # 家庭/裝置管理 CGI 後端，見「API 整合」章節
@@ -146,7 +156,7 @@ API/                      # 家庭/裝置管理 CGI 後端，見「API 整合」
 ## 待辦
 
 1. 驗證觸控腳 doorbell / tamper 事件（燒錄新版 sketch → 摸腳位 → 看 server log）
-2. **OTA 尚未在實體 ESP32 上跑過**：目前只驗證了 MQTT 觸發訊息格式跟 HTTP 檔案下載（`curl` 測得到 200），還沒真的燒錄過一次完整流程
+2. **OTA（含簽章驗證）尚未在實體 ESP32 上跑過**：簽章的產生/驗證邏輯已經在 server 端用假韌體交叉驗證過（正常簽章通過、竄改內容會正確被拒絕），但 Arduino 端「邊下載邊算 SHA-256 邊寫入 OTA 分區」這段從沒真機測過，需要實際燒錄驗證：正常簽章能更新成功、竄改過的 `.bin` 或漏簽的韌體會被裝置端拒絕且不會變磚
 3. handlers 的 TODO：doorbell 推播通知（Telegram / ntfy）、tamper 緊急警報
 4. Node-RED flow 接上 `home/#` 主題做視覺化（node_red 容器已在 compose 裡）
 5. 正式硬體：relay 改回 GPIO26、實體按鈕取代觸控腳，讓韌體改讀 config 回傳的 `pins` 而不是寫死

@@ -5,7 +5,11 @@ __pycache__/
 .DS_Store
 wokwi/
 .vscode
+UC.md
 # Arduino build output
 Arduino/build/
 # OTA 韌體檔案（.bin 太大且是編譯產物，不進版控）
 mqtt-server/firmware/*.bin
+mqtt-server/firmware/*.sig
+# OTA 簽章私鑰，絕對不要進版控；公鑰(ota_public_key.h)沒關係，可以進版控
+mqtt-server/ota_keys/ota_signing_key.pem

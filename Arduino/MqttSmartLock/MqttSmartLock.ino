@@ -15,11 +15,17 @@
  *   GPIO27 = 門鈴觸控腳（T7，手指碰觸即觸發）
  *   GPIO32 = 防拆觸控腳（T9）
  *
- * 需要安裝程式庫：PubSubClient（by Nick O'Leary，程式庫管理員搜尋即可）
+ * 需要安裝程式庫：
+ *   - PubSubClient（by Nick O'Leary，程式庫管理員搜尋即可）
+ *   - Crypto（by Rhys Weatherley，提供 Ed25519.h，OTA 簽章驗證用）
+ * HTTPClient / Update / mbedtls 都是 ESP32 core 內建，不用額外裝。
  */
 #include <WiFi.h>
 #include <PubSubClient.h>
-#include <HTTPUpdate.h>
+#include <HTTPClient.h>
+#include <Update.h>
+#include <Ed25519.h>
+#include "mbedtls/sha256.h"
 
 // ====== 請修改這裡 ======
 const char* WIFI_SSID = "SSID";
@@ -27,6 +33,10 @@ const char* WIFI_PASS = "PWD";
 const char* MQTT_BROKER = "192.168.1.3";  // 跑 mosquitto 的電腦 IP
 const int   MQTT_PORT = 1883;
 // ========================
+
+// OTA 簽章公鑰 —— 由 mqtt-server/ota_keys/generate_keypair.py 產生，
+// 貼到這裡就好，這是公鑰不是私鑰，可以放心進版控。
+const uint8_t OTA_PUBLIC_KEY[32] = { 0x3e, 0xce, 0x9b, 0xb3, 0x24, 0xd5, 0x3b, 0x27, 0xa6, 0x99, 0x10, 0x5e, 0xc9, 0x99, 0xcb, 0x81, 0xd8, 0x00, 0xa3, 0xc3, 0x09, 0x39, 0x94, 0x8d, 0xf6, 0x3f, 0x17, 0xea, 0x36, 0xd0, 0x14, 0x22 };
 
 #define MODEL "SMART-LOCK-V1"
 #define FW_VERSION "1.0.0"  // 每次燒錄新版本記得改，OTA 後可從序列埠確認是否真的更新成功
@@ -80,7 +90,37 @@ void publishEvent(const char* type) {
   Serial.println("[EVENT] " + payload);
 }
 
-// ---------- OTA 更新 ----------
+// ---------- OTA 更新（下載韌體 → 邊寫入邊算 SHA-256 → 驗證 Ed25519 簽章 → 通過才切換分區）----------
+
+// 下載固定 64 bytes 的簽章檔（伺服器對韌體 SHA-256 雜湊值的 Ed25519 簽章）
+bool downloadSignature(const String& url, uint8_t* out64) {
+  HTTPClient http;
+  http.begin(url);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("[OTA] 簽章檔下載失敗，HTTP %d\n", code);
+    http.end();
+    return false;
+  }
+  int len = http.getSize();
+  if (len != 64) {
+    Serial.printf("[OTA] 簽章檔大小不對(%d，應為 64)，可能還沒 sign_firmware.py 簽過\n", len);
+    http.end();
+    return false;
+  }
+  WiFiClient* stream = http.getStreamPtr();
+  int got = 0;
+  unsigned long t0 = millis();
+  while (got < 64 && millis() - t0 < 10000) {
+    if (stream->available()) {
+      int n = stream->read(out64 + got, 64 - got);
+      if (n > 0) got += n;
+    }
+  }
+  http.end();
+  return got == 64;
+}
+
 void handleOta(const String& msg) {
   int idx = msg.indexOf("\"url\":\"");
   if (idx < 0) {
@@ -90,22 +130,84 @@ void handleOta(const String& msg) {
   int start = idx + 7;
   int end = msg.indexOf('"', start);
   String url = msg.substring(start, end);
-  Serial.println("[OTA] 開始下載更新: " + url);
+  String sigUrl = url + ".sig";
 
-  httpUpdate.rebootOnUpdate(true);  // 成功會自動重開機
-  t_httpUpdate_return ret = httpUpdate.update(espClient, url);
-  switch (ret) {
-    case HTTP_UPDATE_FAILED:
-      Serial.printf("[OTA] 失敗 (%d): %s\n", httpUpdate.getLastError(),
-                    httpUpdate.getLastErrorString().c_str());
-      break;
-    case HTTP_UPDATE_NO_UPDATES:
-      Serial.println("[OTA] 伺服器回應無更新內容");
-      break;
-    case HTTP_UPDATE_OK:
-      Serial.println("[OTA] 成功，準備重開機");  // rebootOnUpdate 通常會直接重開，這行不一定看得到
-      break;
+  Serial.println("[OTA] 下載簽章: " + sigUrl);
+  uint8_t signature[64];
+  if (!downloadSignature(sigUrl, signature)) {
+    Serial.println("[OTA] 拿不到簽章檔，中止更新（沒簽章的韌體一律拒絕）");
+    return;
   }
+
+  Serial.println("[OTA] 開始下載韌體: " + url);
+  HTTPClient http;
+  http.begin(url);
+  int httpCode = http.GET();
+  if (httpCode != HTTP_CODE_OK) {
+    Serial.printf("[OTA] 下載韌體失敗，HTTP %d\n", httpCode);
+    http.end();
+    return;
+  }
+
+  int contentLength = http.getSize();
+  if (contentLength <= 0) {
+    Serial.println("[OTA] 伺服器沒回傳韌體大小，中止");
+    http.end();
+    return;
+  }
+
+  if (!Update.begin(contentLength)) {
+    Serial.printf("[OTA] Update.begin 失敗: %s\n", Update.errorString());
+    http.end();
+    return;
+  }
+
+  // 邊下載邊寫進 OTA 分區、邊累加 SHA-256，整包韌體不會同時放進記憶體
+  mbedtls_sha256_context sha_ctx;
+  mbedtls_sha256_init(&sha_ctx);
+  mbedtls_sha256_starts(&sha_ctx, 0);  // 0 = SHA-256（不是 SHA-224）
+
+  WiFiClient* stream = http.getStreamPtr();
+  uint8_t buf[512];
+  int written = 0;
+  while (written < contentLength && http.connected()) {
+    size_t avail = stream->available();
+    if (!avail) { delay(1); continue; }
+    int n = stream->read(buf, min(avail, sizeof(buf)));
+    if (n <= 0) continue;
+    Update.write(buf, n);
+    mbedtls_sha256_update(&sha_ctx, buf, n);
+    written += n;
+  }
+  http.end();
+
+  if (written != contentLength) {
+    Serial.printf("[OTA] 下載不完整 (%d/%d bytes)，中止\n", written, contentLength);
+    Update.abort();
+    mbedtls_sha256_free(&sha_ctx);
+    return;
+  }
+
+  uint8_t digest[32];
+  mbedtls_sha256_finish(&sha_ctx, digest);
+  mbedtls_sha256_free(&sha_ctx);
+
+  Serial.print("[OTA] 韌體 SHA-256: ");
+  for (int i = 0; i < 32; i++) Serial.printf("%02x", digest[i]);
+  Serial.println();
+
+  if (!Ed25519::verify(signature, OTA_PUBLIC_KEY, digest, sizeof(digest))) {
+    Serial.println("[OTA] 簽章驗證失敗！韌體可能被竄改或不是官方簽發，拒絕更新");
+    Update.abort();  // 沒切換開機分區，重開機還是跑原本的韌體，不會變磚
+    return;
+  }
+
+  Serial.println("[OTA] 簽章驗證通過，寫入完成，準備重開機");
+  if (!Update.end(true)) {
+    Serial.printf("[OTA] Update.end 失敗: %s\n", Update.errorString());
+    return;
+  }
+  ESP.restart();
 }
 
 // ---------- MQTT 訊息處理 ----------
