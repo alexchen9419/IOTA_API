@@ -1,0 +1,12 @@
+# 統一用 LF，不管 clone/checkout 這台機器的 core.autocrlf 設定是什麼。
+# 這個 repo 有不少檔案最後會被複製進 Linux 容器（Dockerfile COPY . .），
+# CRLF 混進 Python/shebang 開頭的檔案在容器裡可能直接執行失敗，所以強制 LF 比較安全。
+* text=auto eol=lf
+
+# 編譯後的二進位檔案，不要讓 line-ending 正規化去動它們的內容
+*.pyc binary
+*.db binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary

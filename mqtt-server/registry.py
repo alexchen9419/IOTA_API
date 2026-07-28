@@ -27,6 +27,8 @@ def register(client, payload):
         return None
 
     devices = load_devices()
+    already_registered = mac in devices and devices[mac].get("model") == model
+
     devices[mac] = {
         "model": model,
         "last_seen": time.time(),
@@ -34,9 +36,13 @@ def register(client, payload):
     }
     save_devices(devices)
 
-    config = MODELS[model]
-    topic = f"home/device/{mac}/config"
-    client.publish(topic, json.dumps(config), retain=True)
-    print(f"[INFO] 註冊成功: {mac} ({model})")
+    if already_registered:
+        # 裝置已註冊過（devices.json 有紀錄），視為重連：更新 last_seen 即可，
+        # config 早就 retain 在 broker 上，裝置 subscribe 時會自動收到，不用重發
+        print(f"[INFO] 裝置重新連線（已註冊過）: {mac} ({model})")
+    else:
+        topic = f"home/device/{mac}/config"
+        client.publish(topic, json.dumps(MODELS[model]), retain=True)
+        print(f"[INFO] 註冊成功: {mac} ({model})")
 
     return MODELS[model]
