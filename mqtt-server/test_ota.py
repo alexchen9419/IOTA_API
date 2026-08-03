@@ -7,6 +7,7 @@ import sys
 import time
 import paho.mqtt.client as mqtt
 from paho.mqtt.enums import CallbackAPIVersion
+import mqtt_tls
 
 BROKER = os.getenv("MQTT_BROKER", "localhost")
 # OTA_HOST：跑 mqtt-server 的電腦區網 IP，要跟 Arduino sketch 的 MQTT_BROKER 一致，
@@ -24,7 +25,8 @@ def on_connect(client, userdata, connect_flags, reason_code, properties):
 
 client = mqtt.Client(CallbackAPIVersion.VERSION2)
 client.on_connect = on_connect
-client.connect(BROKER, 1883)
+mqtt_tls.apply_tls(client)
+client.connect(BROKER, mqtt_tls.broker_port())
 client.loop_start()
 time.sleep(1)  # 等待連線建立
 

@@ -24,6 +24,8 @@ import sys
 import traceback
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+import mqtt_tls
+
 
 # ---------------------------------------------------------------------------
 # CGI / API helpers
@@ -618,18 +620,16 @@ class MqttControlAdapter(ControlAdapter):
             return ControlResult(False, "FAILED", "MQTT_DRIVER_MISSING: install paho-mqtt", topic, {})
 
         host = os.getenv("MQTT_HOST", "localhost")
-        port = int(os.getenv("MQTT_PORT", "1883"))
+        port = mqtt_tls.broker_port()
         username = os.getenv("MQTT_USERNAME")
         password = os.getenv("MQTT_PASSWORD")
-        use_tls = os.getenv("MQTT_USE_TLS", "0") == "1"
         qos = int(os.getenv("MQTT_QOS", "1"))
         timeout = float(os.getenv("MQTT_TIMEOUT", "5"))
 
         client = mqtt.Client(client_id=f"gateway-uc4-{secrets.token_hex(4)}")
         if username:
             client.username_pw_set(username, password=password)
-        if use_tls:
-            client.tls_set()
+        mqtt_tls.apply_tls(client)
 
         try:
             client.connect(host, port, keepalive=15)
@@ -815,6 +815,33 @@ def validate_device_scope(cur, family_id: int, device_id: str) -> Dict[str, Any]
     return device
 
 
+def check_maintenance_mode(cur, device: Dict[str, Any], device_id: str) -> None:
+    """UC5.1: routine control is paused while a device is in maintenance mode.
+
+    mqtt_topic_bridge.py sweeps expired maintenance windows in the background,
+    but that sweep can lag behind by up to its poll interval; mirror the same
+    lazy-expiry check guest tokens use so a command is never blocked by a
+    window that has already logically ended.
+    """
+    if "maintenance_mode" not in device or not device.get("maintenance_mode"):
+        return
+    expires_at = device.get("maintenance_expires_at")
+    if expires_at is not None:
+        expiry_dt = parse_datetime(expires_at, "maintenance_expires_at")
+        if expiry_dt <= now_utc():
+            update_dynamic(cur, "devices", {
+                "maintenance_mode": 0,
+                "maintenance_expires_at": None,
+                "maintenance_reason": None,
+                "last_action": "MAINTENANCE_MODE_AUTO_EXPIRED",
+            }, "`device_id`=%s", (device_id,))
+            return
+    raise ApiError(
+        409, "DEVICE_IN_MAINTENANCE",
+        f"Device is in maintenance mode: {device.get('maintenance_reason') or 'no reason given'}",
+    )
+
+
 def handle_control(payload: Dict[str, Any]) -> Dict[str, Any]:
     require_fields(payload, ["family_id", "device_id", "action"])
     family_id = as_int(payload["family_id"], "family_id")
@@ -834,7 +861,8 @@ def handle_control(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         # Validate device first so cross-family attempts are blocked before auth-specific control.
-        validate_device_scope(cur, family_id, device_id)
+        device = validate_device_scope(cur, family_id, device_id)
+        check_maintenance_mode(cur, device, device_id)
 
         guest_token_row: Optional[Dict[str, Any]] = None
         if auth_type == "user":

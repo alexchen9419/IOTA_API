@@ -3,6 +3,7 @@ import json
 import os
 import paho.mqtt.client as mqtt
 from paho.mqtt.enums import CallbackAPIVersion
+import mqtt_tls
 
 BROKER = os.getenv("MQTT_BROKER", "localhost")
 MAC = "11:11:11:11:11:11"
@@ -30,7 +31,8 @@ def on_message(client, userdata, msg):
 client = mqtt.Client(CallbackAPIVersion.VERSION2)
 client.on_connect = on_connect
 client.on_message = on_message
-client.connect(BROKER, 1883)
+mqtt_tls.apply_tls(client)
+client.connect(BROKER, mqtt_tls.broker_port())
 client.loop_forever()
 
 print("\n[TEST] 測試完成" + (" ✓" if received_config else " ✗ 未收到設定"))

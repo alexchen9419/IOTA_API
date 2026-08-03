@@ -70,6 +70,9 @@ CREATE TABLE IF NOT EXISTS devices (
   last_seen           DATETIME NULL,
   last_update          DATETIME NULL,
   updated_at          DATETIME NULL,
+  maintenance_mode     TINYINT(1) NOT NULL DEFAULT 0,
+  maintenance_expires_at DATETIME NULL,
+  maintenance_reason   VARCHAR(255),
   created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_family (family_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
