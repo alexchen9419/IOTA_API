@@ -167,3 +167,68 @@ CREATE TABLE IF NOT EXISTS policy_rules (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_family (family_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS gateways (
+  gateway_id             VARCHAR(191) PRIMARY KEY,
+  family_id              INT NOT NULL,
+  owner_user_id          VARCHAR(191) NOT NULL,
+  gateway_name           VARCHAR(191) NOT NULL DEFAULT '未命名 Gateway',
+  status                 VARCHAR(32) NOT NULL DEFAULT 'Active',
+  public_key             TEXT,
+  public_key_fingerprint CHAR(64),
+  hardware_model         VARCHAR(100),
+  firmware_version       VARCHAR(100),
+  binding_method         VARCHAR(64),
+  initialized_at         DATETIME NULL,
+  created_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  last_seen_at           DATETIME NULL,
+  UNIQUE KEY uq_gateway_public_key_fingerprint (public_key_fingerprint),
+  KEY idx_gateway_family (family_id),
+  KEY idx_gateway_owner (owner_user_id),
+  KEY idx_gateway_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS gateway_trust_links (
+  link_id            VARCHAR(191) PRIMARY KEY,
+  gateway_a_id       VARCHAR(191) NOT NULL,
+  gateway_b_id       VARCHAR(191) NOT NULL,
+  created_by         VARCHAR(191) NOT NULL,
+  status             VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  pairing_token_hash CHAR(64),
+  expires_at         DATETIME NULL,
+  created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  confirmed_at       DATETIME NULL,
+  revoked_at         DATETIME NULL,
+  updated_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_gateway_trust_pair (gateway_a_id, gateway_b_id),
+  UNIQUE KEY uq_gateway_trust_token_hash (pairing_token_hash),
+  KEY idx_gateway_trust_status (status),
+  KEY idx_gateway_trust_expires (expires_at),
+  KEY idx_gateway_trust_created_by (created_by)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ledger_events (
+  event_id         VARCHAR(191) PRIMARY KEY,
+  dedup_key        VARCHAR(191) NOT NULL,
+  uc_id            VARCHAR(32) NOT NULL,
+  event_type       VARCHAR(191) NOT NULL,
+  family_id        INT,
+  gateway_id       VARCHAR(191),
+  created_by       VARCHAR(191),
+  payload          JSON NOT NULL,
+  payload_hash     CHAR(64) NOT NULL,
+  status           VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  ledger_reference VARCHAR(255),
+  retry_count      INT NOT NULL DEFAULT 0,
+  last_error       TEXT,
+  created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  submitted_at     DATETIME NULL,
+  confirmed_at     DATETIME NULL,
+  updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_ledger_dedup_key (dedup_key),
+  KEY idx_ledger_status_created (status, created_at),
+  KEY idx_ledger_family (family_id, created_at),
+  KEY idx_ledger_gateway (gateway_id, created_at),
+  KEY idx_ledger_event_type (event_type, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
