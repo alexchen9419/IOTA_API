@@ -15,24 +15,53 @@
  *   GPIO27 = 門鈴觸控腳（T7，手指碰觸即觸發）
  *   GPIO32 = 防拆觸控腳（T9）
  *
+ * MQTT 連線走 TLS（8883），broker 只認得帶正確 CA 簽的連線，明碼 1883 已經關掉。
+ * ESP32 沒有內建正確的即時時間，TLS 驗證憑證效期需要，所以開機時會先跟 NTP 對時。
+ *
  * 需要安裝程式庫：
  *   - PubSubClient（by Nick O'Leary，程式庫管理員搜尋即可）
  *   - Crypto（by Rhys Weatherley，提供 Ed25519.h，OTA 簽章驗證用）
- * HTTPClient / Update / mbedtls 都是 ESP32 core 內建，不用額外裝。
+ * HTTPClient / Update / mbedtls / WiFiClientSecure 都是 ESP32 core 內建，不用額外裝。
  */
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <HTTPClient.h>
 #include <Update.h>
 #include <Ed25519.h>
 #include "mbedtls/sha256.h"
+#include <time.h>
 
 // ====== 請修改這裡 ======
 const char* WIFI_SSID = "SSID";
 const char* WIFI_PASS = "PWD";
 const char* MQTT_BROKER = "192.168.1.3";  // 跑 mosquitto 的電腦 IP
-const int   MQTT_PORT = 1883;
+const int   MQTT_PORT = 8883;             // TLS，不是明碼的 1883
 // ========================
+
+// MQTT TLS 用的 CA 憑證 —— 由 config/certs/generate_certs.sh 產生的 ca.crt，
+// 內容貼到這裡就好，這是公開憑證不是私鑰，可以放心進版控。
+const char* MQTT_ROOT_CA = R"EOF(
+-----BEGIN CERTIFICATE-----
+MIIDIzCCAgugAwIBAgIUCb+7h7qxMGzdimciFTyuDf7WwLIwDQYJKoZIhvcNAQEL
+BQAwITEfMB0GA1UEAwwWSU9UQS1BUEkgTG9jYWwgTVFUVCBDQTAeFw0yNjA3Mjgx
+MTQ0MjBaFw0zNjA3MjUxMTQ0MjBaMCExHzAdBgNVBAMMFklPVEEtQVBJIExvY2Fs
+IE1RVFQgQ0EwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC1Q1Ob+Y+n
+zMCdAO/vfq14E6RevOhGE04HRqZ8/omTwJCUGwMv5Opj4DBREcMYILqJ+cj+ywen
+83XrWUodqftcfo0h9iXN9iWBt1O5E1+edN4mebA1/7ZuKEhhxtQTq5T8qr9FJE4y
+NIV/MebCkiAmh2iyuWFB6CCL41YN0sONglzw7RYpu6ET3Ni7NwI7Zh/XE5X3r9Uy
+HMjGku0WbsOAp8eKG8E9N0t9rgi0A6Rba4P6v4itcIkVTyNK450P0PSgnqY71jSI
+W4gJtc+/K1/oye0aaaBfBBrFGIfBdoylUYP60XmYfDEI+kW6VSLydpb34kk6WNLm
+iD1cckczArnHAgMBAAGjUzBRMB0GA1UdDgQWBBSplfoVSgevY8M+2xcAXzoZgcF/
+4TAfBgNVHSMEGDAWgBSplfoVSgevY8M+2xcAXzoZgcF/4TAPBgNVHRMBAf8EBTAD
+AQH/MA0GCSqGSIb3DQEBCwUAA4IBAQCHalf4S4kDbHBJj2zF43XAeJUz196B6Kc5
+C/SFOZIjV320zaJwpVTfRYW/w12tZXu9D7Q06Da3WP4G/MXlQZeZP7cPt1GCvrzN
+aoF2o8i2BIfAsTy/kfxBzjtm96SVuGMf1ZAaR4ueuuAgJZmdu7CyPtmmeu3zl+at
+9z8Crwvq/JO0/bi0WzsTwYXIsiPSfZY95t3oYJp+koaCf70VL3grLwC3+zKgJ9lA
+h5zXMrVbVwoa4vVKcfVkblioY312VbAC0oGjdsejLj3vXYFJItze5u+DJ4uVDWVf
+jzJglOg4Lo+tjMGLDD9bBk+hZcvTxCXqGtuU78emriA/t9HkR2Mw
+-----END CERTIFICATE-----
+)EOF";
 
 // OTA 簽章公鑰 —— 由 mqtt-server/ota_keys/generate_keypair.py 產生，
 // 貼到這裡就好，這是公鑰不是私鑰，可以放心進版控。
@@ -61,7 +90,27 @@ bool isTouched(uint8_t pin, uint32_t base) {
   return v < base - base / 3 || v > base + base / 3;
 }
 
-WiFiClient espClient;
+// TLS 驗證憑證效期需要正確的即時時間，ESP32 開機預設是 1970，要先跟 NTP 對時。
+// 對不到也不會卡死（10 秒逾時後繼續），但對不到時間 TLS 連線一定會失敗，
+// connectMqtt() 那邊會一直印失敗、重試，看到的話回來檢查這裡。
+void syncTime() {
+  configTime(0, 0, "pool.ntp.org", "time.google.com");
+  Serial.print("[NTP] 對時中");
+  time_t now = time(nullptr);
+  unsigned long t0 = millis();
+  while (now < 1700000000 && millis() - t0 < 10000) {  // 1700000000 ≈ 2023 年，隨便挑一個「肯定對過時」的門檻
+    delay(300);
+    Serial.print(".");
+    now = time(nullptr);
+  }
+  if (now < 1700000000) {
+    Serial.println("\n[NTP] 對時逾時，時間可能不對，TLS 連線大概率會失敗");
+  } else {
+    Serial.println("\n[NTP] 對時完成: " + String((unsigned long)now));
+  }
+}
+
+WiFiClientSecure espClient;  // MQTT 走 TLS，用這個而不是 WiFiClient
 PubSubClient mqtt(espClient);
 
 String macAddr;          // 例如 "A4:CF:12:34:56:78"
@@ -289,6 +338,9 @@ void setup() {
   macAddr = WiFi.macAddress();
   Serial.println("\n[WiFi] IP: " + WiFi.localIP().toString() + "  MAC: " + macAddr);
   Serial.println("[BOOT] 韌體版本 " FW_VERSION);
+
+  syncTime();                        // TLS 驗證憑證效期要用，一定要先對時
+  espClient.setCACert(MQTT_ROOT_CA); // 之後 mqtt.connect() 會用這個 CA 驗證 broker 的憑證
 
   topicConfig = "home/device/" + macAddr + "/config";
   topicCmd    = "home/device/" + macAddr + "/cmd";

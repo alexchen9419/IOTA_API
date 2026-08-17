@@ -21,6 +21,11 @@ This bridge subscribes to both worlds' topics and translates between them,
 calling the existing device_status_update.handle_status() directly instead
 of re-publishing to home/{family_id}/device/{device_id}/status.
 
+It also runs a background sweep (UC5.1) that auto-reverts devices out of
+maintenance mode once their maintenance_expires_at has passed, since this is
+the one long-lived API process available to do that without a dedicated
+scheduler — see sweep_expired_maintenance().
+
 Run as its own long-lived process (see docker-compose service api-mqtt-bridge).
 """
 from __future__ import annotations
@@ -30,6 +35,7 @@ import json
 import os
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -39,8 +45,10 @@ import paho.mqtt.client as mqtt
 
 sys.path.insert(0, str(Path(__file__).parent))
 import device_status_update  # existing, unmodified API module
+import mqtt_tls
 
 ACTION_MAP = {"LOCK": "lock", "UNLOCK": "unlock"}
+MAINTENANCE_SWEEP_INTERVAL_SECONDS = int(os.getenv("MAINTENANCE_SWEEP_INTERVAL_SECONDS", "60"))
 
 
 def get_db_connection():
@@ -108,6 +116,69 @@ def write_event_audit(device_id: str, family_id: Optional[int], event_type: str)
         print(f"[bridge] failed to write event audit for {device_id}: {exc}", file=sys.stderr)
 
 
+def sweep_expired_maintenance() -> None:
+    """UC5.1: force any device whose maintenance_expires_at has passed back into
+    normal mode, and record the auto-revert in audit_logs. Runs on a timer from
+    main() for as long as this process is alive."""
+    try:
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT device_id, family_id FROM devices "
+                    "WHERE maintenance_mode = 1 AND maintenance_expires_at IS NOT NULL "
+                    "AND maintenance_expires_at <= NOW()"
+                )
+                expired = cur.fetchall()
+                for row in expired:
+                    device_id = row["device_id"]
+                    family_id = row.get("family_id")
+                    cur.execute(
+                        """
+                        UPDATE devices
+                        SET maintenance_mode = 0, maintenance_expires_at = NULL, maintenance_reason = NULL,
+                            last_action = 'MAINTENANCE_MODE_AUTO_EXPIRED'
+                        WHERE device_id = %s
+                        """,
+                        (device_id,),
+                    )
+                    cur.execute("SELECT current_hash FROM audit_logs ORDER BY id DESC LIMIT 1")
+                    prev_row = cur.fetchone()
+                    prev_hash = prev_row["current_hash"] if prev_row and prev_row.get("current_hash") else "0" * 64
+                    timestamp = int(time.time())
+                    command_id = f"MTN_AUTO_{timestamp}_{device_id}"
+                    raw = json.dumps({
+                        "command_id": command_id, "device_id": device_id, "family_id": family_id,
+                        "action": "MAINTENANCE_MODE_AUTO_EXPIRED", "timestamp": timestamp,
+                        "prev_hash": prev_hash,
+                    }, sort_keys=True)
+                    current_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+                    cur.execute(
+                        """
+                        INSERT INTO audit_logs
+                          (command_id, actor_id, actor_type, device_id, family_id, action,
+                           parameters, status, decision, reason, prev_hash, current_hash, hash, timestamp)
+                        VALUES (%s, %s, 'SYSTEM', %s, %s, 'MAINTENANCE_MODE_AUTO_EXPIRED', CAST(%s AS JSON),
+                                'Restored', 'ALLOW', %s, %s, %s, %s, %s)
+                        """,
+                        (command_id, "mqtt_topic_bridge", device_id, family_id,
+                         json.dumps({}), "MAINTENANCE_WINDOW_EXPIRED", prev_hash,
+                         current_hash, current_hash, timestamp),
+                    )
+                    print(f"[bridge] maintenance window expired for {device_id}, auto-restored")
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        print(f"[bridge] maintenance sweep failed: {exc}", file=sys.stderr)
+
+
+def maintenance_sweep_loop(stop_event: threading.Event) -> None:
+    while not stop_event.is_set():
+        sweep_expired_maintenance()
+        stop_event.wait(MAINTENANCE_SWEEP_INTERVAL_SECONDS)
+
+
 def topic_parts(topic: str) -> List[str]:
     return topic.split("/")
 
@@ -166,9 +237,10 @@ def handle_device_event(topic: str, payload: Dict[str, Any]) -> None:
 
 def main() -> None:
     host = os.getenv("MQTT_HOST", "localhost")
-    port = int(os.getenv("MQTT_PORT", "1883"))
+    port = mqtt_tls.broker_port()
 
     client = mqtt.Client(client_id="api-mqtt-topic-bridge")
+    mqtt_tls.apply_tls(client)
 
     def on_connect(client, userdata, flags, rc):
         if rc == 0:
@@ -201,10 +273,15 @@ def main() -> None:
     client.on_message = on_message
 
     running = True
+    maintenance_stop = threading.Event()
+    maintenance_thread = threading.Thread(
+        target=maintenance_sweep_loop, args=(maintenance_stop,), daemon=True
+    )
 
     def stop(_signum, _frame):
         nonlocal running
         running = False
+        maintenance_stop.set()
         client.disconnect()
 
     signal.signal(signal.SIGINT, stop)
@@ -212,6 +289,8 @@ def main() -> None:
 
     client.connect(host, port, keepalive=30)
     client.loop_start()
+    maintenance_thread.start()
+    print(f"[bridge] maintenance-mode sweep running every {MAINTENANCE_SWEEP_INTERVAL_SECONDS}s")
     try:
         while running:
             signal.pause()
@@ -219,6 +298,7 @@ def main() -> None:
         while running:
             time.sleep(1)
     finally:
+        maintenance_stop.set()
         client.loop_stop()
         client.disconnect()
 

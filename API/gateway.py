@@ -31,6 +31,8 @@ ROUTES: dict[str, tuple[str, tuple[str, ...]]] = {
     "device_pair": ("device_pair/device_pair.py", ("POST",)),
     "list_devices": ("list_devices/list_devices.py", ("GET", "POST")),
     "decommission_device": ("decommission_device/decommission_device.py", ("POST",)),
+    "ota_update": ("ota_update/ota_update.py", ("POST",)),
+    "maintenance_mode": ("maintenance_mode/maintenance_mode.py", ("GET", "POST")),
     "control_device": ("control_device/control_device.py", ("POST",)),
     "device_status_update": ("control_device/device_status_update.py", ("POST",)),
     "dashboard": ("dashboard/get_family_dashboard.py", ("POST",)),

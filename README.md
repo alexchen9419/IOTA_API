@@ -5,11 +5,13 @@
 1. **`mqtt-server/`** — ESP32 裝置透過 MQTT 向後端註冊、回報狀態/事件，後端可下發指令與 OTA 更新，並提供網頁監控介面
 2. **`API/`** — 家庭/裝置管理後端：帳號、家庭成員邀請與權限、裝置配對/除役、遠端控制（含訪客權杖與零信任政策）、儀表板查詢，搭配 MySQL 與雜湊鏈稽核日誌
 
+MQTT 全面走 **TLS**（8883），明碼 1883 已經關閉，細節見下方「MQTT TLS 加密」。
+
 ## 系統架構
 
 ```text
 ESP32 (SMART-LOCK-V1 / SMART-STRONGBOX-V1)     Docker Compose
-        │  WiFi + MQTT                          ├─ mqtt_service      (eclipse-mosquitto, 1883/9001)
+        │  WiFi + MQTT (TLS)                    ├─ mqtt_service      (eclipse-mosquitto, TLS:8883, 9001)
         └──────────────────┬────────────────────┼─ mqtt_server       (Python, mqtt-server/)
                             │                    │    ├─ 註冊/指令/OTA 韌體伺服器 (8080)
                             │                    │    └─ 網頁監控 web_monitor.py (8090)
@@ -27,8 +29,9 @@ docker compose up -d --build
 docker logs -f mqtt_server        # 應印出「Broker 連線成功」
 ```
 
-- 防火牆需開放：TCP `1883`（ESP32 連 broker）、`8080`（OTA 韌體下載）、`8090`（網頁監控）、`8091`（家庭/裝置管理 API）、`3306`（MySQL，除錯用可拿掉）、`1880`（Node-RED）
+- 防火牆需開放：TCP `8883`（ESP32 連 broker，TLS）、`8080`（OTA 韌體下載）、`8090`（網頁監控）、`8091`（家庭/裝置管理 API）、`3306`（MySQL，除錯用可拿掉）、`1880`（Node-RED）
 - Arduino sketch 裡的 `MQTT_BROKER` 要改成跑 Docker 這台機器的區網 IP
+- **換機器/換區網 IP 記得重新產生 TLS 憑證**（見「MQTT TLS 加密」），CA 簽的 server 憑證綁定特定 IP，換了 IP 沒重簽的話 ESP32 會直接連線失敗
 - `docker-compose.yml` 裡的 MySQL 密碼是本機開發用的預設值（`devroot123` / `devpass123`），正式環境要換掉
 - repo 用 [`.gitattributes`](.gitattributes) 統一文字檔換行符為 LF，Windows 上 clone/編輯不用擔心 CRLF 被 git 標記異動
 
@@ -44,6 +47,25 @@ docker logs -f mqtt_server        # 應印出「Broker 連線成功」
 | `home/device/<mac>/ota` | server → 裝置 | `{"url": "http://<host>:8080/firmware/xxx.bin", "version": "..."}` |
 
 裝置已在 `devices.json` 註冊過的話，重連只會更新 `last_seen`、不會重發 config；server 端 handler 仍會在每次收到 `home/register` 時重新掛上（避免 server 重啟後漏接 state/event）。
+
+## MQTT TLS 加密
+
+broker 只開 TLS（8883），沒有 TLS 一律連不上，不會有明碼可以退。用自簽 CA，適合區網內自架的私有部署：
+
+```bash
+# 產生 CA + server 憑證（第一次或換 IP 時跑；CA 只會產生一次，換 IP 只重簽 server 憑證）
+cd config/certs
+./generate_certs.sh <mosquitto 所在機器的區網IP>   # 例：./generate_certs.sh 192.168.1.3
+```
+
+跑完之後：
+
+- `ca.crt` 的內容要貼進 `Arduino/MqttSmartLock/MqttSmartLock.ino` 的 `MQTT_ROOT_CA`（這個 repo 已經貼過一組了，除非重新產生 CA 否則不用重貼）
+- Docker 服務都已經在 `docker-compose.yml` 設好 `MQTT_USE_TLS=1` + `MQTT_CA_CERT=/certs/ca.crt`（掛的是同一份 `config/certs/`），`docker compose up -d --build` 就會生效
+- ESP32 沒有 RTC，TLS 驗證憑證效期需要正確時間，sketch 開機會先跟 NTP 對時（`syncTime()`），對不到時間 TLS 連線會失敗，序列埠會看到 `[NTP] 對時逾時`
+- `ca.key` / `server.key` 是私鑰，已加進 `.gitignore`，不會進版控；`ca.crt` / `server.crt` 是公開憑證，可以進版控
+
+`API/` 那邊所有直接連 broker 的腳本（`control_device.py`、`mqtt_topic_bridge.py` 等）跟 `mqtt-server/` 全部共用同一個 `MQTT_USE_TLS`/`MQTT_CA_CERT`/`MQTT_PORT` 環境變數規則（`mqtt-server/mqtt_tls.py`、`API/mqtt_tls.py` 兩支小工具模組）。TLS 只保證傳輸加密，**沒有身分驗證**——`allow_anonymous true` 還在，之後要做帳密驗證是另一件事。
 
 ## 網頁監控
 
@@ -76,8 +98,8 @@ docker exec mqtt_server python test_ota.py <mac> <檔名.bin> <版本號>
 
 - Sketch：`Arduino/MqttSmartLock/MqttSmartLock.ino`（repo 版的 WiFi 帳密是佔位字串，**帳密不要 commit**）
 - 板子：ESP32 Dev Module，序列埠 115200
-- 需要安裝：**PubSubClient 2.8** + **Crypto**（Rhys Weatherley，`Ed25519.h`，OTA 簽章驗證用）；`HTTPClient`/`Update`/`mbedtls` 是 ESP32 core 內建
-- 需要安裝：**PubSubClient 2.8**（knolleary）；`HTTPUpdate.h` 是 ESP32 core 內建，不用額外裝
+- 需要安裝：**PubSubClient 2.8** + **Crypto**（Rhys Weatherley，`Ed25519.h`，OTA 簽章驗證用）；`HTTPClient`/`Update`/`mbedtls`/`WiFiClientSecure` 是 ESP32 core 內建
+- MQTT 連線用 `WiFiClientSecure`（TLS），OTA 韌體下載仍是明碼 HTTP（兩者是分開的傳輸層，OTA 靠簽章驗證把關，見上方「OTA 更新」）
 
 ## 常用測試指令
 
@@ -90,7 +112,7 @@ docker exec mqtt_server python test_ota.py        # 觸發 OTA
 
 ## API 後端（`API/`）
 
-家庭/裝置管理用的 CGI API：每支 `.py` 都是獨立的 CGI 腳本（從 stdin 讀 JSON payload、印 `Status:` header + JSON 回應），搭配 MySQL（`devicemanagement` 資料庫）。每個資料夾旁都附規範 PDF，是實際的介面契約文件。現在透過 `api`（FastAPI 閘道，見 [`API/gateway.py`](API/gateway.py)）跑在 Docker Compose 裡，`http://<host>:8091/<endpoint>` 呼叫，閘道會把 HTTP request 轉成 CGI 呼叫方式跑對應腳本，並把腳本印出的 `Status:` 正確轉成 HTTP 狀態碼。
+家庭/裝置管理用的 CGI API：每支 `.py` 都是獨立的 CGI 腳本（從 stdin 讀 JSON payload、印 `Status:` header + JSON 回應），搭配 MySQL（`devicemanagement` 資料庫）。每個資料夾旁都附規範 PDF，是實際的介面契約文件。現在透過 `api`（FastAPI 閘道，見 [`API/gateway.py`](API/gateway.py)）跑在 Docker Compose 裡，`http://<host>:8091/<endpoint>` 呼叫，閘道會把 HTTP request 轉成 CGI 呼叫方式跑對應腳本，並把腳本印出的 `Status:` 正確轉成 HTTP 狀態碼。完整規格（含每支端點的請求/回應細節、安全機制、已知限制）見 [`API/WHITEPAPER.md`](API/WHITEPAPER.md)。
 
 | Endpoint | 對應腳本 / 用例 | 功能 |
 |---|---|---|
@@ -103,7 +125,9 @@ docker exec mqtt_server python test_ota.py        # 觸發 OTA
 | `POST /device_pair` | `device_pair/`（UC2.1） | 裝置首次安全配對：ECDH 金鑰交換 + HKDF 產生 session key，只存 hash |
 | `GET`\|`POST /list_devices` | `list_devices/`（UC2.1） | 查詢已配對裝置清單與最近上鏈（audit_logs）紀錄 |
 | `POST /decommission_device` | `decommission_device/`（UC2.3） | 裝置除役/解綁：`status=Revoked`、清空 session_key_hash |
-| `POST /control_device` | `control_device/control_device.py`（UC4.1/4.2） | 遠端控制（lock/unlock 等）：驗證家庭角色或訪客權杖 + 零信任 policy_rules，`CONTROL_MODE=mqtt` 時真的發 MQTT 指令 |
+| `POST /ota_update` | `ota_update/ota_update.py`（UC2.2） | Admin 觸發指定裝置的簽章韌體更新：驗證家庭 Admin 身分後，發布跟 `test_ota.py` 相同格式的 MQTT OTA 訊息 |
+| `GET`\|`POST /maintenance_mode` | `maintenance_mode/maintenance_mode.py`（UC5.1） | Admin 開啟/關閉裝置維修模式：開啟時強制設定最長有效時間，`control_device` 在維修模式中會拒絕 lock/unlock，時間到由 `api-mqtt-bridge` 背景 sweep 自動恢復 |
+| `POST /control_device` | `control_device/control_device.py`（UC4.1/4.2） | 遠端控制（lock/unlock 等）：驗證家庭角色或訪客權杖 + 零信任 policy_rules + 維修模式檢查，`CONTROL_MODE=mqtt` 時真的發 MQTT 指令 |
 | `POST /device_status_update` | `control_device/device_status_update.py`（UC4.1/4.2） | 裝置執行結果回呼（更新 `control_commands` / `device_telemetry`） |
 | `POST /dashboard` | `dashboard/get_family_dashboard.py`（UC4.3） | 家庭儀表板：裝置清單 + 最新遙測 + 連線健康度，寫入 `DASHBOARD_VIEWED` 稽核 |
 
@@ -127,24 +151,27 @@ docker exec mqtt_server python test_ota.py        # 觸發 OTA
 - `respond_invitation.py` / `generate_guest_qr.py` 另外會發布到 `home/security/gateway_{family_id}/auth_sync`，這條路徑沒有任何 subscriber、跟裝置控制無關，維持原樣未動
 - `control_device.py` 走 `mqtt` 模式時目前只有 `LOCK`/`UNLOCK` 會真的送到裝置，其餘動作（ON/OFF/OPEN/CLOSE/TOGGLE/START/STOP）韌體不支援，橋接會丟棄並記 log
 
-**環境變數**：`api` / `api-mqtt-bridge` 兩個服務在 `docker-compose.yml` 裡已經設好 `DB_HOST`/`DB_USER`/`DB_PASS`/`DB_PASSWORD`/`DB_NAME`/`MQTT_HOST`/`MQTT_PORT`/`CONTROL_MODE`（兩種 DB 密碼變數名都設，因為不同腳本讀的變數名不完全一致）。
+**環境變數**：`api` / `api-mqtt-bridge` 兩個服務在 `docker-compose.yml` 裡已經設好 `DB_HOST`/`DB_USER`/`DB_PASS`/`DB_PASSWORD`/`DB_NAME`/`MQTT_HOST`/`MQTT_PORT`/`MQTT_USE_TLS`/`MQTT_CA_CERT`/`CONTROL_MODE`（兩種 DB 密碼變數名都設，因為不同腳本讀的變數名不完全一致）；`api` 服務另外設了 `OTA_HOST`（`/ota_update` 組韌體下載網址用，必須是 ESP32 能直接連到的區網 IP，跟 Arduino sketch 的 `MQTT_BROKER`、`mqtt-server/test_ota.py` 的 `OTA_HOST` 要是同一台機器）。
 
 ## 檔案地圖
 
 ```text
 docker-compose.yml        # mqtt-broker / mqtt-server / node-red / mysql / api / api-mqtt-bridge
-config/mosquitto.conf     # broker 設定
+config/mosquitto.conf     # broker 設定（TLS-only，8883）
+config/certs/             # generate_certs.sh + CA/server 憑證（私鑰不進版控）
 mqtt-server/
   main.py                 # 入口：MQTT 註冊/指令處理 + OTA 韌體檔案伺服器 (8080)
   web_monitor.py           # 網頁監控（FastAPI + WebSocket, 8090）
   registry.py              # 註冊邏輯，寫 devices.json、回傳 config（retained）
+  mqtt_tls.py              # 共用 MQTT TLS 設定（main.py/web_monitor.py/test_*.py 用）
   models.yaml              # 型號定義（SMART-LOCK-V1 / SMART-STRONGBOX-V1）
   handlers/                # 各型號的 state/event 處理
-  firmware/                # OTA 韌體檔案（.bin 不進版控）
+  firmware/                # OTA 韌體檔案（.bin/.sig 不進版控）
   test_*.py                # 測試腳本
 Arduino/MqttSmartLock/     # ESP32 韌體
 API/                       # 家庭/裝置管理 CGI 後端（見上方「API 後端」章節）
   gateway.py               # FastAPI CGI 閘道，8091 對外（新增）
+  mqtt_tls.py              # 共用 MQTT TLS 設定（新增）
   schema.sql               # MySQL schema，mysql 容器啟動時自動載入（新增）
   Dockerfile / requirements.txt                 # api / api-mqtt-bridge 共用（新增）
   login/ register/                              # 帳號登入 / 註冊

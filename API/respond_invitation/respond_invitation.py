@@ -6,6 +6,7 @@ import sys
 import pymysql
 import os
 from dotenv import load_dotenv
+import mqtt_tls
 
 load_dotenv()
 DB_HOST = os.getenv('DB_HOST', 'localhost')
@@ -106,9 +107,10 @@ def main():
                             }
                         }
                         
-                        # 2. 設定 MQTT Client 並連線 (匿名登入，localhost:1883)
+                        # 2. 設定 MQTT Client 並連線（匿名登入，TLS，port 由 mqtt_tls 決定）
                         client = mqtt.Client()
-                        client.connect("192.168.0.84", 1883, 60)
+                        mqtt_tls.apply_tls(client)
+                        client.connect(MQTT_HOST, mqtt_tls.broker_port(), 60)
                         
                         # 3. 配合專案規範設定 Topic
                         # 核心主題路徑：home/security/#

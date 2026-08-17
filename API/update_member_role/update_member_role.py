@@ -7,6 +7,7 @@ import pymysql
 import os
 import paho.mqtt.publish as publish
 from dotenv import load_dotenv
+import mqtt_tls
 
 # 載入環境變數配置
 load_dotenv()
@@ -145,7 +146,8 @@ def main():
                     payload=json.dumps(mqtt_payload),
                     qos=1,
                     hostname=MQTT_HOST,
-                    port=1883
+                    port=mqtt_tls.broker_port(),
+                    **mqtt_tls.publish_tls_kwargs()
                 )
                 mqtt_msg = "身分異動指令已實時同步至地端閘道器"
             except Exception as mqtt_err:

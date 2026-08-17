@@ -18,6 +18,7 @@ import sys
 from typing import Any, Dict
 
 import device_status_update
+import mqtt_tls
 
 
 def parse_topic(topic: str) -> Dict[str, Any]:
@@ -41,17 +42,15 @@ def main() -> None:
         sys.exit(1)
 
     host = os.getenv("MQTT_HOST", "localhost")
-    port = int(os.getenv("MQTT_PORT", "1883"))
+    port = mqtt_tls.broker_port()
     username = os.getenv("MQTT_USERNAME")
     password = os.getenv("MQTT_PASSWORD")
-    use_tls = os.getenv("MQTT_USE_TLS", "0") == "1"
     topic_filter = os.getenv("MQTT_STATUS_TOPIC", "home/+/device/+/status")
 
     client = mqtt.Client(client_id=os.getenv("MQTT_CLIENT_ID", "gateway-uc4-status-worker"))
     if username:
         client.username_pw_set(username, password=password)
-    if use_tls:
-        client.tls_set()
+    mqtt_tls.apply_tls(client)
 
     def on_connect(client, userdata, flags, rc):
         if rc == 0:

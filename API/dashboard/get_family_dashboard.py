@@ -651,6 +651,9 @@ def build_device_card(cur, family_id: int, device: Dict[str, Any], include_histo
         "last_command_id": (telemetry or {}).get("command_id") or (command or {}).get("command_id"),
         "last_command": command,
         "telemetry_data": telemetry_data,
+        "maintenance_mode": bool(device.get("maintenance_mode")),
+        "maintenance_expires_at": device.get("maintenance_expires_at"),
+        "maintenance_reason": device.get("maintenance_reason"),
     }
 
     if include_history:

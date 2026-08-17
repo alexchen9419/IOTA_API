@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
+import mqtt_tls
 
 BROKER = os.getenv("MQTT_BROKER", "localhost")
 DEVICES_FILE = Path("devices.json")
@@ -159,7 +160,8 @@ def _start_mqtt():
     mqtt_client = mqtt.Client(CallbackAPIVersion.VERSION2)
     mqtt_client.on_connect = _on_connect
     mqtt_client.on_message = _on_message
-    mqtt_client.connect(BROKER, 1883)
+    mqtt_tls.apply_tls(mqtt_client)
+    mqtt_client.connect(BROKER, mqtt_tls.broker_port())
     mqtt_client.loop_forever()
 
 

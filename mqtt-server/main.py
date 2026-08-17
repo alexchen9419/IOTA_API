@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 import registry
+import mqtt_tls
 
 BROKER = os.getenv("MQTT_BROKER", "localhost")
 active_handlers = {}  # mac → handler module
@@ -67,10 +68,11 @@ def on_message(client, userdata, msg):
 client = mqtt.Client(CallbackAPIVersion.VERSION2)
 client.on_connect = on_connect
 client.on_message = on_message
+mqtt_tls.apply_tls(client)
 # broker（容器）可能比 server 晚就緒，重試直到連上
 while True:
     try:
-        client.connect(BROKER, 1883)
+        client.connect(BROKER, mqtt_tls.broker_port())
         break
     except OSError as e:
         print(f"[INFO] Broker ({BROKER}) 未就緒: {e}，2 秒後重試")
