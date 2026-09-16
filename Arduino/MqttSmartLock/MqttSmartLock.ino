@@ -49,8 +49,26 @@
 // ====== 請修改這裡 ======
 const char* WIFI_SSID = "SSID";
 const char* WIFI_PASS = "PWD";
-const char* MQTT_BROKER = "192.168.1.3";  // 跑 mosquitto 的電腦 IP
-const int   MQTT_PORT = 8883;             // TLS，不是明碼的 1883
+const char* MQTT_BROKER = "192.168.1.3";  // 跑 mosquitto 的電腦 IP（用 ipconfig 查，不是 127.0.0.1）
+
+// MQTT 加密開關。
+//
+// 1 = TLS 8883（正式設定，docker-compose.yml + config/mosquitto.conf）
+//     需要 broker 那台機器有 config/certs/server.key。那支私鑰依 .gitignore
+//     不進版控，clone 下來的機器沒有，mosquitto 會起不來。
+//
+// 0 = 明文 1883（本機開發，docker-compose.dev.yml + config/mosquitto.dev.conf）
+//     跳過 TLS 與 NTP 對時，用來先把互通性測出來。
+//
+// 切成 0 之前先確認 broker 是用 dev 設定啟動的，否則 1883 沒有在聽：
+//   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#define MQTT_USE_TLS 1
+
+#if MQTT_USE_TLS
+  const int MQTT_PORT = 8883;
+#else
+  const int MQTT_PORT = 1883;
+#endif
 // ========================
 
 // MQTT TLS 用的 CA 憑證 —— 由 config/certs/generate_certs.sh 產生的 ca.crt，
@@ -172,7 +190,14 @@ void syncTime() {
   }
 }
 
-WiFiClientSecure espClient;  // MQTT 走 TLS，用這個而不是 WiFiClient
+// MQTT_USE_TLS=1 時走 WiFiClientSecure（驗證 broker 憑證）；
+// 0 時走一般 WiFiClient，明文連 1883。
+// OTA 的韌體下載走的是另一條 HTTPClient，不受這個開關影響。
+#if MQTT_USE_TLS
+  WiFiClientSecure espClient;
+#else
+  WiFiClient espClient;
+#endif
 PubSubClient mqtt(espClient);
 
 String macAddr;          // 例如 "A4:CF:12:34:56:78"
@@ -404,8 +429,12 @@ void setup() {
   Serial.println("\n[WiFi] IP: " + WiFi.localIP().toString() + "  MAC: " + macAddr);
   Serial.println("[BOOT] 韌體版本 " FW_VERSION);
 
+#if MQTT_USE_TLS
   syncTime();                        // TLS 驗證憑證效期要用，一定要先對時
   espClient.setCACert(MQTT_ROOT_CA); // 之後 mqtt.connect() 會用這個 CA 驗證 broker 的憑證
+#else
+  Serial.println("[MQTT] 明文模式（1883）—— 跳過 NTP 對時與憑證驗證");
+#endif
 
   topicConfig = "home/device/" + macAddr + "/config";
   topicCmd    = "home/device/" + macAddr + "/cmd";

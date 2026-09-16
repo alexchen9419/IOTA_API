@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  後端 API 閘道目前是明文 HTTP（http://<區網IP>:8091）。Android 9 (API 28)
+  之後預設封鎖所有 cleartext 流量 —— 沒有這份設定，App 連 debug 版都連不上。
+
+  為什麼是全域開放而不是白名單：
+  伺服器位址由使用者在「伺服器設定」頁自行輸入，可能是任何一個區網 IP
+  （開發機換網路就會變）。Android 的 <domain> 只做字串比對，不支援 CIDR
+  網段，因此無法用白名單涵蓋「任意區網位址」這個需求。
+
+  ⚠️ 這是為了配合「後端尚未支援 HTTPS」所做的妥協，不是最終狀態。
+  後端接上 TLS 之後，應該：
+    1. 刪除這個檔案
+    2. 移除 AndroidManifest.xml 的 android:networkSecurityConfig 屬性
+    3. 把 ApiConfig 的預設 scheme 改成 https
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

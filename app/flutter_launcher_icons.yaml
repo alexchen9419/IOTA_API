@@ -1,0 +1,32 @@
+# App 圖示產生設定。
+#
+# 來源圖由 assets/icon/ 提供（深色底 + 靛紫粉漸層六角形鎖孔，
+# 與 lib/widgets/app_logo.dart 的畫面標誌視覺一致）。
+#
+# 重新產生各平台圖示：
+#   cd app && dart run flutter_launcher_icons
+#
+# 產出的檔案會覆蓋 android/ios/web/windows 底下的 icon 資源，
+# 那些是建置產物，改圖時重跑這個指令即可，不需要手動編輯。
+
+flutter_launcher_icons:
+  image_path: "assets/icon/app_icon.png"
+
+  android: true
+  # Android 8+ 的自適應圖示：系統會依照裝置形狀裁切，
+  # 前景層用另一份留了安全邊界的圖，避免鎖孔被切掉。
+  adaptive_icon_background: "#0F172A"
+  adaptive_icon_foreground: "assets/icon/app_icon_foreground.png"
+
+  ios: true
+  # iOS 不支援透明通道，來源圖本身已經是不透明深色底。
+  remove_alpha_ios: true
+
+  web:
+    generate: true
+    background_color: "#0F172A"
+    theme_color: "#8B5CF6"
+
+  windows:
+    generate: true
+    icon_size: 256

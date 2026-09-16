@@ -155,14 +155,37 @@ def main() -> None:
 
                 # 查詢最近的 UC2.1 註冊事件。
                 # 此處只取 DEVICE_REGISTERED，避免混入其他 UC 的操作日誌。
+                #
+                # family_id 必須一起過濾：這份 logs 會直接顯示在 App 的家庭詳情頁，
+                # 沒有過濾的話任何使用者都會看到「其他家庭」的裝置註冊紀錄
+                # （含 device_id 與雜湊鏈），屬於跨場域資料外洩。
+                # 舊資料可能有 audit_logs.family_id 為 NULL 的列（早期寫入時沒帶
+                # family_id），這種列以 device_id 反查 devices 表補判斷，避免
+                # 既有紀錄在修正後整批消失。
+                log_where = ["a.action = 'DEVICE_REGISTERED'"]
+                log_params = []
+                if family_id:
+                    log_where.append(
+                        "(a.family_id = %s OR (a.family_id IS NULL AND d.family_id = %s))"
+                    )
+                    log_params.extend([family_id, family_id])
+                if owner_user_id:
+                    log_where.append(
+                        "(d.owner_user_id = %s OR d.owner_user_id IS NULL)"
+                    )
+                    log_params.append(owner_user_id)
+
                 cursor.execute(
-                    """
-                    SELECT command_id, user_id, device_id, action, status, timestamp, prev_hash, current_hash
-                    FROM audit_logs
-                    WHERE action = 'DEVICE_REGISTERED'
-                    ORDER BY timestamp DESC, command_id DESC
+                    f"""
+                    SELECT a.command_id, a.user_id, a.device_id, a.action, a.status,
+                           a.timestamp, a.prev_hash, a.current_hash
+                    FROM audit_logs a
+                    LEFT JOIN devices d ON d.device_id = a.device_id
+                    WHERE {' AND '.join(log_where)}
+                    ORDER BY a.timestamp DESC, a.command_id DESC
                     LIMIT 20
-                    """
+                    """,
+                    log_params,
                 )
                 logs = cursor.fetchall()
 

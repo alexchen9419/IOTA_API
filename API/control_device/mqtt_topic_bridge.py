@@ -50,6 +50,15 @@ import mqtt_tls
 ACTION_MAP = {"LOCK": "lock", "UNLOCK": "unlock"}
 MAINTENANCE_SWEEP_INTERVAL_SECONDS = int(os.getenv("MAINTENANCE_SWEEP_INTERVAL_SECONDS", "60"))
 
+# 指令與狀態回報的關聯，見 remember_pending_command() / take_pending_command()。
+EXPECTED_STATE_BY_ACTION = {"LOCK": "LOCKED", "UNLOCK": "UNLOCKED"}
+# 待關聯指令的保留時間。要比 App 的輪詢上限（30 秒）寬，讓裝置慢一點回報也
+# 還關聯得到；但不能長到把離線很久的裝置上線回報誤判成指令完成。
+PENDING_TTL_SEC = float(os.getenv("COMMAND_PENDING_TTL_SEC", "120"))
+# device_id -> (command_id, 期望的實體狀態, 轉發時間)
+PENDING_COMMANDS: Dict[str, tuple] = {}
+PENDING_LOCK = threading.Lock()
+
 
 def get_db_connection():
     return pymysql.connect(
@@ -194,9 +203,69 @@ def handle_api_cmd(client: mqtt.Client, topic: str, payload: Dict[str, Any]) -> 
     if not mapped:
         print(f"[bridge] {device_id}: action '{action}' not supported by firmware, dropped")
         return
+    # 先記起來再轉發：韌體回報的 state 不帶 command_id，靠這裡補。
+    remember_pending_command(device_id, payload)
     real_topic = f"home/device/{device_id}/cmd"
     client.publish(real_topic, json.dumps({"action": mapped}))
     print(f"[bridge] {topic} action={action} -> {real_topic} action={mapped}")
+
+
+def remember_pending_command(device_id: str, payload: dict) -> None:
+    """記下剛轉發出去的指令，供後續的狀態回報關聯。
+
+    control_device.py 發到 home/{family}/device/{id}/cmd 的是完整的
+    command_payload，裡面**本來就帶著 command_id**（實測確認）。bridge 在轉發
+    時順手記起來，就不必等資料庫。
+
+    為什麼不去查資料庫：control_device.py 用 autocommit=False，**先 publish 到
+    MQTT、後 commit**。實測 API 回應要 1.2 秒、指令列要到那之後才可見，而裝置
+    0.5 秒就回報了 —— 查資料庫必然撞上競態，真實 ESP32 沒有 sleep 只會更快。
+    """
+    command_id = str(payload.get("command_id") or "")
+    action = str(payload.get("action", "")).strip().upper()
+    if not command_id:
+        return
+    expected = EXPECTED_STATE_BY_ACTION.get(action)
+    if not expected:
+        return
+    with PENDING_LOCK:
+        PENDING_COMMANDS[device_id] = (command_id, expected, time.monotonic())
+
+
+def take_pending_command(device_id: str, reported_state: str) -> Optional[str]:
+    """取出這筆狀態回報對應的 command_id，取走後就移除。
+
+    韌體的 home/device/<mac>/state 只有 {"locked": bool}，**沒有 command_id**
+    （見 Arduino/MqttSmartLock 的 publishState），而
+    device_status_update.handle_status() 是 `if command_id:` 才會更新
+    control_commands。少了這一段關聯，每一筆控制指令都永遠停在 PUBLISHED、
+    completed_at 永遠是 NULL —— 即使裝置確實動作了。
+
+    對 App 來說那等於「每一次控制都失敗」：輪詢看不到狀態離開 PUBLISHED，
+    30 秒後一定跳逾時訊息。
+
+    兩道防線避免誤關聯：
+    - PENDING_TTL_SEC 之內才算數，避免離線很久的裝置上線回報被誤標成完成
+    - 期望狀態要相符（UNLOCK→UNLOCKED、LOCK→LOCKED）。使用者在現場手動轉動
+      門鎖時實體狀態會與待處理指令相反，那筆指令不該被標記成完成
+
+    # ponytail: 行程內記憶體，bridge 只有單一實例（docker-compose 的
+    # api-mqtt-bridge）。要跑多實例時這裡得換成共享儲存，或改成讓韌體在
+    # state 裡回帶 command_id（那才是真正的根本解，但要動韌體）。
+    """
+    with PENDING_LOCK:
+        entry = PENDING_COMMANDS.get(device_id)
+        if not entry:
+            return None
+        command_id, expected, sent_at = entry
+        if time.monotonic() - sent_at > PENDING_TTL_SEC:
+            PENDING_COMMANDS.pop(device_id, None)
+            return None
+        if expected != reported_state:
+            # 不是這筆指令的結果（例如自動上鎖、或現場手動操作），留著等它真正的回報
+            return None
+        PENDING_COMMANDS.pop(device_id, None)
+        return command_id
 
 
 def handle_device_state(topic: str, payload: Dict[str, Any]) -> None:
@@ -210,12 +279,19 @@ def handle_device_state(topic: str, payload: Dict[str, Any]) -> None:
         print(f"[bridge] {device_id}: not paired (no row in devices table), skipping state update")
         return
     locked = payload.get("locked")
+    physical_state = "LOCKED" if locked else "UNLOCKED"
     status_payload = {
         "family_id": family_id,
         "device_id": device_id,
         "status": "SUCCEEDED",
-        "physical_state": "LOCKED" if locked else "UNLOCKED",
+        "physical_state": physical_state,
     }
+    # 韌體不帶 command_id，這裡補上去，否則 control_commands 永遠不會離開
+    # PUBLISHED，App 的輪詢一定逾時。
+    command_id = take_pending_command(device_id, physical_state)
+    if command_id:
+        status_payload["command_id"] = command_id
+        print(f"[bridge] {device_id}: state {physical_state} -> 關聯指令 {command_id}")
     try:
         result = device_status_update.handle_status(status_payload)
         print(f"[bridge] {topic} -> device_status_update: {result}")

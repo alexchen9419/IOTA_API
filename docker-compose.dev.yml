@@ -1,0 +1,33 @@
+# 本機開發用覆蓋設定 —— 不影響正式的 docker-compose.yml（TLS/8883）。
+#
+# 用法：
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d mysql mqtt-broker api api-mqtt-bridge
+#
+# 差異只有兩點：
+#   1. MQTT 走明文 1883（原因見 config/mosquitto.dev.conf 的說明）
+#   2. OTA_HOST 指向本機區網 IP
+#
+# 沒有覆蓋任何版控中的憑證或設定檔。
+
+services:
+  mqtt-broker:
+    command: ["mosquitto", "-c", "/mosquitto/config/mosquitto.dev.conf"]
+    ports:
+      - "1883:1883"
+
+  mqtt-server:
+    environment:
+      MQTT_BROKER: mqtt-broker
+      MQTT_PORT: "1883"
+      MQTT_USE_TLS: "0"
+
+  api:
+    environment:
+      MQTT_PORT: "1883"
+      MQTT_USE_TLS: "0"
+      OTA_HOST: "192.168.50.234"
+
+  api-mqtt-bridge:
+    environment:
+      MQTT_PORT: "1883"
+      MQTT_USE_TLS: "0"

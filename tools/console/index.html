@@ -1,0 +1,640 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IOTA 觀測台</title>
+<!--
+  IOTA 智慧家居 — 開發觀測台
+
+  為什麼存在：
+  「模擬器跑得過」不等於「真實硬體能 work」。要判斷這件事，唯一可靠的方法是
+  自己看線上實際跑的封包，而不是相信任何人的結論。
+
+  這個頁面同時做兩件事：
+    1. 提供 CRUD 介面（跟 Flutter App 打同一組 API，同樣的 HTTP 請求）
+    2. 直接用 WebSocket 訂閱 mosquitto（9001），把 MQTT 上真正流過的訊息
+       原封不動顯示出來
+
+  所以真機與模擬器在這個畫面上會長得一模一樣、或者不一樣 —— 你自己判斷，
+  不必相信我。
+
+  為什麼是本機檔案而不是雲端頁面：它要連 localhost 的 broker 與 API，
+  雲端託管的頁面連不到你的機器。
+-->
+<style>
+  :root{
+    --bg:#0b0d14; --surface:#141824; --surface2:#1b2030; --border:#252b3d;
+    --text:#e8eaf2; --dim:#9aa3bd; --faint:#5f6885;
+    --indigo:#6366f1; --purple:#a855f7; --pink:#ec4899;
+    --ok:#22c55e; --warn:#f59e0b; --err:#ef4444; --info:#38bdf8;
+    --mono:ui-monospace,"Cascadia Mono",Consolas,"Noto Sans Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--text); font-size:13px;
+    font-family:"Noto Sans TC",system-ui,-apple-system,"Segoe UI",sans-serif;
+    height:100vh; display:flex; flex-direction:column; overflow:hidden;
+  }
+  button{font-family:inherit; font-size:12px; cursor:pointer; border-radius:6px;
+    border:1px solid var(--border); background:var(--surface2); color:var(--text);
+    padding:6px 11px; transition:.12s}
+  button:hover:not(:disabled){border-color:var(--indigo); background:#232a3e}
+  button:disabled{opacity:.4; cursor:not-allowed}
+  button.primary{background:var(--indigo); border-color:var(--indigo); color:#fff}
+  button.primary:hover:not(:disabled){background:#4f52d8}
+  button.danger{border-color:#7f2d2d; color:#fca5a5}
+  button.danger:hover:not(:disabled){background:#3a1b1b; border-color:var(--err)}
+  button.sm{padding:3px 8px; font-size:11px}
+  input,select{font-family:inherit; font-size:12px; background:#0e111a; color:var(--text);
+    border:1px solid var(--border); border-radius:6px; padding:6px 9px; width:100%}
+  input:focus,select:focus{outline:none; border-color:var(--indigo)}
+  label{display:block; color:var(--dim); font-size:11px; margin:0 0 3px}
+  .row{display:flex; gap:7px; align-items:center}
+  .row>*{min-width:0}
+  .grow{flex:1}
+
+  /* ---- 頂部列 ---- */
+  header{
+    display:flex; align-items:center; gap:14px; padding:9px 14px;
+    background:var(--surface); border-bottom:1px solid var(--border); flex-wrap:wrap;
+  }
+  .brand{font-weight:700; letter-spacing:.5px; font-size:14px;
+    background:linear-gradient(135deg,var(--indigo),var(--pink));
+    -webkit-background-clip:text; background-clip:text; color:transparent}
+  .ep{display:flex; align-items:center; gap:5px}
+  .ep input{width:190px; font-family:var(--mono); font-size:11px; padding:4px 7px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--faint);flex:none}
+  .dot.on{background:var(--ok); box-shadow:0 0 7px var(--ok)}
+  .dot.off{background:var(--err)}
+  .who{margin-left:auto; color:var(--dim); font-size:11px; font-family:var(--mono)}
+
+  /* ---- 三欄 ---- */
+  main{flex:1; display:grid; grid-template-columns:288px 1fr 1fr; min-height:0}
+  @media(max-width:1200px){ main{grid-template-columns:260px 1fr} .col-wire{grid-column:1/-1} }
+  .col{display:flex; flex-direction:column; min-height:0; min-width:0;
+    border-right:1px solid var(--border)}
+  .col:last-child{border-right:none}
+  .scroll{overflow-y:auto; overflow-x:hidden; flex:1; padding:11px}
+  .scroll::-webkit-scrollbar{width:9px}
+  .scroll::-webkit-scrollbar-thumb{background:#2b3248; border-radius:5px}
+
+  .panel{background:var(--surface); border:1px solid var(--border);
+    border-radius:9px; margin-bottom:10px; overflow:hidden}
+  .panel>h3{margin:0; padding:8px 11px; font-size:11px; font-weight:700;
+    letter-spacing:1px; color:var(--dim); background:var(--surface2);
+    border-bottom:1px solid var(--border); text-transform:uppercase;
+    display:flex; align-items:center; gap:7px}
+  .panel>h3 .tag{margin-left:auto; font-weight:400; letter-spacing:0;
+    text-transform:none; color:var(--faint); font-family:var(--mono)}
+  .pbody{padding:10px; display:flex; flex-direction:column; gap:8px}
+
+  .sect{padding:8px 12px; border-bottom:1px solid var(--border)}
+  .sect h4{margin:0 0 7px; font-size:11px; letter-spacing:1px; color:var(--dim);
+    text-transform:uppercase; display:flex; align-items:center; gap:6px}
+
+  /* ---- 卡片 ---- */
+  .card{background:var(--surface2); border:1px solid var(--border);
+    border-radius:8px; padding:9px 10px; margin-bottom:7px}
+  .card.sel{border-color:var(--purple); background:#221a33}
+  .card .title{font-weight:600; font-size:13px; display:flex; align-items:center; gap:6px}
+  .card .sub{color:var(--faint); font-size:11px; font-family:var(--mono); margin-top:2px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .badges{display:flex; flex-wrap:wrap; gap:4px; margin-top:6px}
+  .b{font-size:10px; padding:2px 6px; border-radius:4px; font-weight:600;
+    background:#ffffff0f; color:var(--dim); white-space:nowrap}
+  .b.ok{background:#22c55e22;color:#86efac} .b.warn{background:#f59e0b22;color:#fcd34d}
+  .b.err{background:#ef444422;color:#fca5a5} .b.info{background:#38bdf822;color:#7dd3fc}
+  .b.pur{background:#a855f722;color:#d8b4fe}
+
+  /* ---- 流程圖 ---- */
+  .flow{padding:11px; border-bottom:1px solid var(--border); background:#0e111a}
+  .hop{display:flex; align-items:center; gap:9px; padding:5px 8px; border-radius:7px;
+    border:1px solid transparent; transition:.2s}
+  .hop.hot{border-color:var(--purple); background:#a855f714}
+  .hop .ico{width:26px;height:26px;border-radius:6px;display:grid;place-items:center;
+    font-size:14px; background:var(--surface2); border:1px solid var(--border); flex:none}
+  .hop .nm{font-size:12px; font-weight:600}
+  .hop .dsc{font-size:10px; color:var(--faint); font-family:var(--mono);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .hop .cnt{margin-left:auto; font-size:10px; color:var(--faint);
+    font-family:var(--mono); flex:none}
+  .arrow{color:var(--faint); text-align:center; font-size:11px; line-height:1; margin:1px 0 1px 20px}
+
+  /* ---- 線路記錄 ---- */
+  .wire{flex:1; overflow-y:auto; padding:7px; font-family:var(--mono); font-size:11px}
+  .wire::-webkit-scrollbar{width:9px}
+  .wire::-webkit-scrollbar-thumb{background:#2b3248;border-radius:5px}
+  .msg{border-left:2px solid var(--faint); padding:4px 8px; margin-bottom:3px;
+    background:#ffffff06; border-radius:0 5px 5px 0; animation:in .18s}
+  @keyframes in{from{opacity:0;transform:translateX(-5px)}to{opacity:1;transform:none}}
+  .msg .h{display:flex; gap:7px; align-items:baseline; flex-wrap:wrap}
+  .msg .t{color:var(--faint); font-size:10px; flex:none}
+  .msg .tp{color:var(--text); word-break:break-all; font-size:11px}
+  .msg .pl{color:var(--dim); margin-top:2px; word-break:break-all;
+    white-space:pre-wrap; font-size:10.5px; line-height:1.45}
+  .msg.app{border-left-color:var(--indigo)}     .msg.app .tp{color:#a5b4fc}
+  .msg.bridge{border-left-color:var(--purple)}  .msg.bridge .tp{color:#d8b4fe}
+  .msg.device{border-left-color:var(--ok)}      .msg.device .tp{color:#86efac}
+  .msg.evt{border-left-color:var(--warn)}       .msg.evt .tp{color:#fcd34d}
+  .msg.http{border-left-color:var(--info)}      .msg.http .tp{color:#7dd3fc}
+  .msg.err{border-left-color:var(--err)}        .msg.err .tp{color:#fca5a5}
+
+  .legend{display:flex; gap:9px; flex-wrap:wrap; padding:7px 11px;
+    border-bottom:1px solid var(--border); font-size:10px; color:var(--dim); align-items:center}
+  .lg{display:flex; align-items:center; gap:4px}
+  .lg i{width:9px;height:2.5px;border-radius:2px;display:block}
+
+  .empty{color:var(--faint); text-align:center; padding:22px 12px; font-size:12px; line-height:1.7}
+  .hint{color:var(--faint); font-size:10.5px; line-height:1.6}
+  .err-txt{color:#fca5a5; font-size:11px}
+  details>summary{cursor:pointer; color:var(--dim); font-size:11px; padding:3px 0;
+    user-select:none; list-style:none}
+  details>summary::before{content:"▸ "; color:var(--faint)}
+  details[open]>summary::before{content:"▾ "}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:7px}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="brand">IOTA 觀測台</span>
+
+  <span class="ep">
+    <span class="dot" id="mqttDot"></span>
+    <label style="margin:0">MQTT</label>
+    <input id="mqttUrl" value="ws://localhost:9001" spellcheck="false">
+  </span>
+
+  <span class="ep">
+    <span class="dot" id="apiDot"></span>
+    <label style="margin:0">API</label>
+    <input id="apiUrl" value="http://localhost:8091" spellcheck="false">
+  </span>
+
+  <button id="btnConnect" class="primary">連線</button>
+  <span class="who" id="who">未登入</span>
+</header>
+
+<main>
+  <!-- ══════════ 左欄：操作 ══════════ -->
+  <div class="col">
+    <div class="scroll">
+
+      <div class="panel">
+        <h3>① 登入</h3>
+        <div class="pbody" id="authBox">
+          <div><label>帳號</label><input id="uid" value="itadmin047698" spellcheck="false"></div>
+          <div><label>密碼</label><input id="pwd" type="password" value="Test1234!"></div>
+          <div class="row">
+            <button class="primary grow" onclick="doLogin()">登入</button>
+            <button onclick="doLogout()">登出</button>
+          </div>
+          <div class="hint">這裡打的是 Flutter App 完全相同的 <code>/login</code>，
+            右側「線路記錄」會顯示實際的 HTTP 請求。</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>② 場域 <span class="tag" id="famTag"></span></h3>
+        <div class="pbody">
+          <div id="famList"><div class="empty">請先登入</div></div>
+          <details>
+            <summary>建立新場域</summary>
+            <div class="row" style="margin-top:6px">
+              <input id="newFam" placeholder="場域名稱" class="grow">
+              <button onclick="createFamily()">建立</button>
+            </div>
+          </details>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>③ 成員 <span class="tag" id="memTag"></span></h3>
+        <div class="pbody">
+          <div id="memList"><div class="empty">選擇一個場域</div></div>
+          <details>
+            <summary>邀請成員</summary>
+            <div style="margin-top:6px; display:flex; flex-direction:column; gap:6px">
+              <input id="inviteUid" placeholder="受邀者帳號 ID">
+              <div class="row">
+                <select id="inviteRole" class="grow">
+                  <option value="Member">家庭成員 (Member)</option>
+                  <option value="Guest">訪客 (Guest)</option>
+                  <option value="Technician">維修人員 (Technician)</option>
+                </select>
+                <button onclick="sendInvite()">發送</button>
+              </div>
+            </div>
+          </details>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>④ 配對裝置</h3>
+        <div class="pbody">
+          <div id="unpaired"></div>
+          <div><label>裝置識別碼 (MAC)</label>
+            <input id="pairMac" placeholder="E8:31:CD:82:80:C8" spellcheck="false"></div>
+          <div><label>裝置名稱</label><input id="pairName" value="大門智慧鎖"></div>
+          <button class="primary" onclick="pairDevice()">啟動 ECDH 配對</button>
+          <div class="hint">MAC 必須與裝置在 <code>home/register</code> 送出的完全一致，
+            否則 bridge 查不到 devices 資料列，狀態回報會被丟棄。</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════ 中欄：拓撲與流程 ══════════ -->
+  <div class="col">
+    <div class="flow">
+      <div style="font-size:11px;letter-spacing:1px;color:var(--dim);
+                  text-transform:uppercase;font-weight:700;margin-bottom:8px">
+        訊息路徑（有流量時會亮起）
+      </div>
+      <div id="hops"></div>
+    </div>
+
+    <div class="sect" style="flex:none">
+      <h4>裝置 <span class="tag" id="devTag" style="margin-left:auto;font-weight:400;
+        color:var(--faint);font-family:var(--mono)"></span></h4>
+      <div class="hint">MQTT 上看到的裝置 = 韌體有註冊；資料庫有資料列 = App 看得到。
+        兩者都要有才算真的接通。</div>
+    </div>
+    <div class="scroll" id="devList"><div class="empty">選擇一個場域</div></div>
+  </div>
+
+  <!-- ══════════ 右欄：線路記錄 ══════════ -->
+  <div class="col col-wire">
+    <div class="legend">
+      <span class="lg"><i style="background:var(--info)"></i>HTTP（手機↔API）</span>
+      <span class="lg"><i style="background:var(--indigo)"></i>API→bridge</span>
+      <span class="lg"><i style="background:var(--purple)"></i>bridge→裝置</span>
+      <span class="lg"><i style="background:var(--ok)"></i>裝置→狀態</span>
+      <span class="lg"><i style="background:var(--warn)"></i>事件</span>
+      <label style="margin-left:auto;display:flex;align-items:center;gap:4px;color:var(--dim)">
+        <input type="checkbox" id="autoScroll" checked style="width:auto">自動捲動
+      </label>
+      <button class="sm" onclick="clearWire()">清除</button>
+    </div>
+    <div class="wire" id="wire">
+      <div class="empty">按上方「連線」開始擷取<br>
+        <span style="font-size:11px">這裡顯示的是 mosquitto 上實際流過的封包，<br>
+        不是這個頁面自己編出來的</span></div>
+    </div>
+  </div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.10.1/mqtt.min.js"></script>
+<script>
+/* ═══════════════════════════════════════════════════════════
+   狀態
+   ═══════════════════════════════════════════════════════════ */
+const S = {
+  mqtt:null, session:null, families:[], famId:null, famName:'', myRole:'',
+  members:[], devices:[],          // devices = 資料庫（API）看到的
+  mqttDevices:new Map(),           // MQTT 上看到的：mac -> {model, locked, lastSeen}
+  hopCounts:{http:0, apiCmd:0, bridgeCmd:0, state:0, event:0},
+  hopTimers:{},
+};
+
+const $ = id => document.getElementById(id);
+const apiBase = () => $('apiUrl').value.replace(/\/+$/,'');
+const esc = s => String(s??'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const now = () => new Date().toTimeString().slice(0,8);
+
+/* ═══════════════════════════════════════════════════════════
+   線路記錄 —— 這個頁面的核心：顯示真正流過的東西
+   ═══════════════════════════════════════════════════════════ */
+function wire(kind, topic, payload){
+  const box = $('wire');
+  if (box.querySelector('.empty')) box.innerHTML = '';
+  const d = document.createElement('div');
+  d.className = 'msg ' + kind;
+  d.innerHTML = `<div class="h"><span class="t">${now()}</span>
+    <span class="tp">${esc(topic)}</span></div>` +
+    (payload ? `<div class="pl">${esc(payload)}</div>` : '');
+  box.appendChild(d);
+  while (box.children.length > 400) box.removeChild(box.firstChild);
+  if ($('autoScroll').checked) box.scrollTop = box.scrollHeight;
+}
+function clearWire(){ $('wire').innerHTML = '<div class="empty">已清除</div>'; }
+
+/* ═══════════════════════════════════════════════════════════
+   路徑圖：六個 hop，有流量就亮
+   ═══════════════════════════════════════════════════════════ */
+const HOPS = [
+  {k:'http',      ico:'📱', nm:'手機 / 這個頁面', dsc:'HTTP POST → API 閘道 :8091'},
+  {k:'apiCmd',    ico:'🔀', nm:'API control_device', dsc:'publish home/{family}/device/{mac}/cmd'},
+  {k:'bridgeCmd', ico:'🌉', nm:'bridge 轉譯', dsc:'→ home/device/{mac}/cmd  UNLOCK→unlock'},
+  {k:'device',    ico:'🔒', nm:'裝置執行', dsc:'servo 轉動'},
+  {k:'state',     ico:'📡', nm:'狀態回報', dsc:'home/device/{mac}/state  {"locked":bool}'},
+  {k:'db',        ico:'🗄️', nm:'bridge → 資料庫', dsc:'device_status_update + 稽核鏈'},
+];
+function renderHops(){
+  $('hops').innerHTML = HOPS.map((h,i) => `
+    ${i ? '<div class="arrow">↓</div>' : ''}
+    <div class="hop" id="hop-${h.k}">
+      <div class="ico">${h.ico}</div>
+      <div style="min-width:0">
+        <div class="nm">${h.nm}</div>
+        <div class="dsc">${esc(h.dsc)}</div>
+      </div>
+      <div class="cnt" id="cnt-${h.k}"></div>
+    </div>`).join('');
+}
+function hit(k){
+  const el = $('hop-'+k); if(!el) return;
+  S.hopCounts[k] = (S.hopCounts[k]||0) + 1;
+  const c = $('cnt-'+k); if (c) c.textContent = '×' + S.hopCounts[k];
+  el.classList.add('hot');
+  clearTimeout(S.hopTimers[k]);
+  S.hopTimers[k] = setTimeout(() => el.classList.remove('hot'), 1400);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   MQTT：直接訂閱 broker，看到什麼就顯示什麼
+   ═══════════════════════════════════════════════════════════ */
+function connectMqtt(){
+  if (S.mqtt) { try{ S.mqtt.end(true); }catch(e){} S.mqtt = null; }
+  const url = $('mqttUrl').value.trim();
+  wire('http', '[觀測台] 連線 MQTT ' + url, null);
+
+  const c = mqtt.connect(url, {clientId:'iota-console-'+Math.random().toString(16).slice(2,8),
+                               reconnectPeriod:3000, connectTimeout:8000});
+  S.mqtt = c;
+
+  c.on('connect', () => {
+    $('mqttDot').className = 'dot on';
+    c.subscribe('home/#', {qos:0});
+    wire('http', '[觀測台] MQTT 已連線，訂閱 home/#', null);
+  });
+  c.on('error', e => { $('mqttDot').className='dot off'; wire('err','[觀測台] MQTT 錯誤', String(e.message||e)); });
+  c.on('close', () => { $('mqttDot').className = 'dot off'; });
+
+  c.on('message', (topic, buf) => {
+    const raw = buf.toString();
+    let obj = null; try { obj = JSON.parse(raw); } catch(e){}
+    const pretty = obj ? JSON.stringify(obj) : raw;
+    const p = topic.split('/');
+
+    // home/{family}/device/{mac}/cmd  ← API control_device 發的（含 command_id）
+    if (p.length===5 && p[0]==='home' && p[2]==='device' && p[4]==='cmd'){
+      wire('app', topic, pretty); hit('apiCmd'); return;
+    }
+    // home/device/{mac}/cmd  ← bridge 翻譯後給韌體的
+    if (p.length===4 && p[1]==='device' && p[3]==='cmd'){
+      wire('bridge', topic, pretty); hit('bridgeCmd'); hit('device'); return;
+    }
+    // home/device/{mac}/state  ← 韌體回報
+    if (p.length===4 && p[1]==='device' && p[3]==='state'){
+      const mac = p[2];
+      const d = S.mqttDevices.get(mac) || {};
+      d.locked = obj ? obj.locked : d.locked; d.lastSeen = Date.now();
+      S.mqttDevices.set(mac, d);
+      wire('device', topic, pretty); hit('state'); hit('db'); renderDevices(); return;
+    }
+    if (p.length===4 && p[1]==='device' && p[3]==='event'){
+      wire('evt', topic, pretty); hit('event'); return;
+    }
+    if (p.length===4 && p[1]==='device' && p[3]==='config'){
+      const mac = p[2];
+      const d = S.mqttDevices.get(mac) || {};
+      d.config = obj; d.lastSeen = Date.now();
+      S.mqttDevices.set(mac, d); renderDevices();
+      wire('bridge', topic + '  (retained config)', pretty); return;
+    }
+    if (topic === 'home/register'){
+      if (obj && obj.mac){
+        const d = S.mqttDevices.get(obj.mac) || {};
+        d.model = obj.model; d.lastSeen = Date.now(); d.registered = true;
+        S.mqttDevices.set(obj.mac, d); renderDevices();
+      }
+      wire('evt', topic + '  ← 裝置註冊', pretty); return;
+    }
+    wire('http', topic, pretty);
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════
+   API：跟 Flutter App 打同一組端點、同樣的 payload 包裝
+   ═══════════════════════════════════════════════════════════ */
+async function api(endpoint, payload){
+  const url = apiBase() + '/' + endpoint;
+  wire('http', `POST /${endpoint}`, JSON.stringify(payload));
+  hit('http');
+  try {
+    const r = await fetch(url, {
+      method:'POST',
+      headers:{'Content-Type':'application/json; charset=utf-8'},
+      // 後端每支 CGI 都讀 {"payload": {...}} 這層包裝
+      body: JSON.stringify({payload}),
+    });
+    const text = await r.text();
+    let body = null; try{ body = JSON.parse(text); }catch(e){}
+    if (!body){ wire('err', `← ${r.status} 回應不是 JSON`, text.slice(0,300)); return null; }
+    const ok = r.ok && (body.status === 'Success' || body.status === 'Warning');
+    wire(ok ? 'http' : 'err', `← ${r.status} ${body.status||''}  ${body.msg||body.message||''}`,
+         body.data ? JSON.stringify(body.data).slice(0,600) : null);
+    $('apiDot').className = 'dot on';
+    return ok ? body : null;
+  } catch(e){
+    $('apiDot').className = 'dot off';
+    wire('err', `← ${endpoint} 連線失敗`, String(e.message||e) +
+      '\n（後端沒開？位址錯了？CORS？）');
+    return null;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   CRUD
+   ═══════════════════════════════════════════════════════════ */
+async function doLogin(){
+  const r = await api('login', {user_id:$('uid').value.trim(), password:$('pwd').value});
+  if (!r) return;
+  S.session = r.data;
+  $('who').textContent = `${r.data.username || r.data.user_id} · ${r.data.user_id}`;
+  await loadFamilies();
+}
+function doLogout(){
+  S.session=null; S.famId=null; S.families=[]; S.members=[]; S.devices=[];
+  $('who').textContent='未登入';
+  $('famList').innerHTML='<div class="empty">請先登入</div>';
+  $('memList').innerHTML='<div class="empty">選擇一個場域</div>';
+  $('devList').innerHTML='<div class="empty">選擇一個場域</div>';
+}
+
+async function loadFamilies(){
+  if (!S.session) return;
+  const r = await api('get_user_families', {user_id:S.session.user_id});
+  S.families = (r && Array.isArray(r.data)) ? r.data : [];
+  $('famTag').textContent = S.families.length + ' 個';
+  $('famList').innerHTML = S.families.length ? S.families.map(f => `
+    <div class="card ${f.family_id==S.famId?'sel':''}" onclick="selectFamily(${f.family_id})">
+      <div class="title">${esc(f.family_name||'未命名')}</div>
+      <div class="badges">
+        <span class="b pur">${esc(f.user_role||'?')}</span>
+        <span class="b">🔒 ${f.device_count??0}</span>
+        <span class="b">👤 ${f.member_count??0}</span>
+        <span class="b">#${f.family_id}</span>
+      </div>
+    </div>`).join('') : '<div class="empty">沒有場域</div>';
+}
+async function createFamily(){
+  const n = $('newFam').value.trim(); if(!n||!S.session) return;
+  if (await api('create_family', {user_id:S.session.user_id, family_name:n})){
+    $('newFam').value=''; await loadFamilies();
+  }
+}
+async function selectFamily(id){
+  const f = S.families.find(x => x.family_id == id); if(!f) return;
+  S.famId = id; S.famName = f.family_name; S.myRole = f.user_role || '';
+  await loadFamilies();
+  await Promise.all([loadMembers(), loadDevices()]);
+}
+
+async function loadMembers(){
+  if (!S.famId) return;
+  const r = await api('get_family_members', {family_id:S.famId, user_id:S.session.user_id});
+  S.members = (r && r.data && Array.isArray(r.data.members)) ? r.data.members : [];
+  $('memTag').textContent = S.members.length + ' 人';
+  $('memList').innerHTML = S.members.length ? S.members.map(m => `
+    <div class="card">
+      <div class="title">${esc(m.username||m.user_id)}</div>
+      <div class="sub">${esc(m.user_id)}</div>
+      <div class="badges">
+        <span class="b pur">${esc(m.role||'?')}</span>
+        ${m.is_self ? '<span class="b info">您</span>' : ''}
+        ${m.end_time ? `<span class="b warn">至 ${esc(String(m.end_time).slice(0,16))}</span>` : ''}
+      </div>
+      ${m.is_self ? '' : `<div class="row" style="margin-top:6px">
+        <select id="role-${esc(m.user_id)}" class="grow" style="font-size:11px;padding:3px 6px">
+          ${['Admin','Member','Guest','Technician','Revoked']
+            .map(r => `<option ${r===m.role?'selected':''}>${r}</option>`).join('')}
+        </select>
+        <button class="sm" onclick="updateRole('${esc(m.user_id)}')">更新</button>
+      </div>`}
+    </div>`).join('') : '<div class="empty">沒有成員</div>';
+}
+async function updateRole(uid){
+  const role = $('role-'+uid).value;
+  if (await api('update_member_role', {family_id:S.famId, admin_uid:S.session.user_id,
+      target_uid:uid, target_role:role})) await loadMembers();
+}
+async function sendInvite(){
+  const uid = $('inviteUid').value.trim(); if(!uid||!S.famId) return;
+  if (await api('send_invitation', {family_id:S.famId, admin_uid:S.session.user_id,
+      invitee_uid:uid, role:$('inviteRole').value})){ $('inviteUid').value=''; }
+}
+
+async function loadDevices(){
+  if (!S.famId) return;
+  // 只送 family_id：list_devices 會把 user_id 當成 owner_user_id 用
+  const r = await api('list_devices', {family_id:S.famId});
+  S.devices = (r && r.data && Array.isArray(r.data.devices)) ? r.data.devices : [];
+  renderDevices();
+}
+
+function renderDevices(){
+  // 把「資料庫看到的」與「MQTT 看到的」合併呈現 —— 兩邊都有才算真的接通
+  const dbMacs = new Set(S.devices.map(d => d.device_id));
+  const rows = [];
+
+  for (const d of S.devices){
+    const live = S.mqttDevices.get(d.device_id);
+    const retired = ['revoked','retired','decommissioned'].includes(String(d.status||'').toLowerCase());
+    rows.push(`
+      <div class="card">
+        <div class="title">${retired?'⛔':'🔒'} ${esc(d.device_name||'未命名')}</div>
+        <div class="sub">${esc(d.device_id)}</div>
+        <div class="badges">
+          <span class="b ok">🗄️ 資料庫</span>
+          ${live ? '<span class="b ok">📡 MQTT 上線</span>'
+                 : '<span class="b err">📡 MQTT 沒看到</span>'}
+          <span class="b ${retired?'err':''}">${esc(d.status||'?')}</span>
+          ${live && live.locked!==undefined
+            ? `<span class="b ${live.locked?'ok':'warn'}">${live.locked?'已上鎖':'已解鎖'}</span>` : ''}
+          ${d.pairing_status ? `<span class="b info">${esc(d.pairing_status)}</span>` : ''}
+        </div>
+        ${retired ? '' : `<div class="row" style="margin-top:7px">
+          <button class="sm" onclick="control('${esc(d.device_id)}','UNLOCK')">🔓 解鎖</button>
+          <button class="sm" onclick="control('${esc(d.device_id)}','LOCK')">🔒 上鎖</button>
+          <button class="sm" onclick="maintenance('${esc(d.device_id)}')">🔧 維修</button>
+          <button class="sm danger" onclick="decommission('${esc(d.device_id)}')">除役</button>
+        </div>`}
+      </div>`);
+  }
+
+  // MQTT 上有、但資料庫沒有 → 這就是「韌體註冊了，但 App 看不到」
+  const orphans = [...S.mqttDevices.entries()].filter(([mac]) => !dbMacs.has(mac));
+  for (const [mac, d] of orphans){
+    rows.push(`
+      <div class="card" style="border-color:#7c5a10;background:#2a2109">
+        <div class="title">⚠️ 未配對裝置</div>
+        <div class="sub">${esc(mac)}</div>
+        <div class="badges">
+          <span class="b err">🗄️ 資料庫沒有</span>
+          <span class="b ok">📡 MQTT 上線</span>
+          ${d.model ? `<span class="b">${esc(d.model)}</span>` : ''}
+        </div>
+        <div class="hint" style="margin-top:6px">
+          韌體有註冊，但沒有資料庫資料列 → App 看不到它，bridge 也會丟掉它的狀態回報。
+        </div>
+        <button class="sm primary" style="margin-top:6px"
+          onclick="$('pairMac').value='${esc(mac)}'">填入配對欄位</button>
+      </div>`);
+  }
+
+  $('devTag').textContent = `資料庫 ${S.devices.length} · MQTT ${S.mqttDevices.size}`;
+  $('devList').innerHTML = rows.length ? rows.join('') :
+    '<div class="empty">這個場域還沒有裝置<br><span style="font-size:11px">' +
+    '裝置開機註冊後，會以「未配對」出現在這裡</span></div>';
+
+  // 左欄提示
+  $('unpaired').innerHTML = orphans.length
+    ? `<div class="b warn" style="display:block;padding:6px 8px;line-height:1.6">
+         MQTT 上有 ${orphans.length} 台未配對裝置，可在中欄點「填入配對欄位」</div>` : '';
+}
+
+async function control(mac, action){
+  await api('control_device', {family_id:S.famId, device_id:mac, action,
+    auth_type:'user', user_id:S.session.user_id, parameters:{}});
+  setTimeout(loadDevices, 2500);
+}
+async function maintenance(mac){
+  const on = confirm('確定：開啟維修模式 60 分鐘？\n（按取消則關閉維修模式）');
+  await api('maintenance_mode', {family_id:S.famId, admin_uid:S.session.user_id,
+    device_id:mac, action: on?'Enable':'Disable',
+    ...(on ? {duration_minutes:60, reason:'觀測台測試'} : {})});
+  loadDevices();
+}
+async function decommission(mac){
+  if (!confirm(`確定將 ${mac} 除役？此操作會撤銷憑證並寫入稽核鏈，無法直接重新配對。`)) return;
+  await api('decommission_device', {device_id:mac, operator_user_id:S.session.user_id,
+    reason:'觀測台測試'});
+  loadDevices();
+}
+async function pairDevice(){
+  const mac = $('pairMac').value.trim();
+  if (!mac || !S.famId) { alert('請先選擇場域並填入 MAC'); return; }
+  if (await api('device_pair', {owner_user_id:S.session.user_id, family_id:S.famId,
+      device_id:mac, device_name:$('pairName').value.trim()||'未命名裝置',
+      device_type:'smart_lock'})){
+    $('pairMac').value=''; await loadDevices();
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   啟動
+   ═══════════════════════════════════════════════════════════ */
+renderHops();
+$('btnConnect').onclick = async () => {
+  connectMqtt();
+  const r = await fetch(apiBase() + '/healthz').then(x => x.json()).catch(() => null);
+  $('apiDot').className = 'dot ' + (r && r.status === 'ok' ? 'on' : 'off');
+  wire(r ? 'http' : 'err', '[觀測台] API /healthz', r ? JSON.stringify(r) : '連不上');
+};
+</script>
+</body>
+</html>
