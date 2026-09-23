@@ -53,17 +53,52 @@ void main() {
   });
 
   group('formatForApi', () {
-    test('輸出後端接受的格式', () {
-      final dt = DateTime(2026, 8, 17, 9, 5);
-      expect(formatForApi(dt), '2026-08-17 09:05:00');
+    // 後端 DATETIME 欄位一律存 UTC（見 parsing.dart 的 asDateTime 註記）。
+    // 送出去的字串必須是 UTC，否則使用者在本地時間選的時段會整整偏移一個時區。
+    test('UTC 輸入原樣輸出', () {
+      expect(
+          formatForApi(DateTime.utc(2026, 8, 17, 1, 5)), '2026-08-17 01:05:00');
+    });
+    test('本地時間先轉成 UTC 才送出（不限執行機器的時區）', () {
+      final local = DateTime(2026, 8, 17, 9, 5);
+      final utc = local.toUtc();
+      String two(int n) => n.toString().padLeft(2, '0');
+      expect(formatForApi(local),
+          '${utc.year}-${two(utc.month)}-${two(utc.day)} '
+          '${two(utc.hour)}:${two(utc.minute)}:00');
     });
   });
 
   group('asDateTime', () {
-    test('解析 MySQL DATETIME 字串', () {
-      expect(asDateTime('2026-08-17 09:05:00'), DateTime(2026, 8, 17, 9, 5));
+    // 2026-09-20 抓到的回歸：後端回的是不帶時區標記的 UTC 字串，
+    // DateTime.tryParse 會當成本地時間解讀，於是 1 分鐘前配對的裝置
+    // 顯示成「8 小時前」（UTC+8）。naive 字串一律補 Z 再解析。
+    test('naive 字串一律當成 UTC 解讀', () {
+      final dt = asDateTime('2026-08-17 09:05:00');
+      expect(dt!.toUtc(), DateTime.utc(2026, 8, 17, 9, 5));
+    });
+    test('回傳本地時間，讓畫面直接顯示', () {
+      expect(asDateTime('2026-08-17 09:05:00')!.isUtc, isFalse);
+    });
+    test('已帶時區標記的字串不被二次轉換', () {
+      expect(asDateTime('2026-08-17T09:05:00Z')!.toUtc(),
+          DateTime.utc(2026, 8, 17, 9, 5));
+      expect(asDateTime('2026-08-17T09:05:00+08:00')!.toUtc(),
+          DateTime.utc(2026, 8, 17, 1, 5));
     });
     test('壞掉的字串回 null', () => expect(asDateTime('¯\\_(ツ)_/¯'), isNull));
+  });
+
+  group('relativeTime', () {
+    // 使用者實際看到的症狀：剛回報的裝置顯示「8 小時前」。
+    test('剛回報的 UTC 時間是「幾分鐘前」而不是「8 小時前」', () {
+      final t = DateTime.now().toUtc().subtract(const Duration(minutes: 2));
+      String two(int n) => n.toString().padLeft(2, '0');
+      final raw = '${t.year}-${two(t.month)}-${two(t.day)} '
+          '${two(t.hour)}:${two(t.minute)}:${two(t.second)}';
+      expect(relativeTime(raw), '2 分鐘前');
+    });
+    test('null 回退', () => expect(relativeTime(null), '從未回報'));
   });
 
   group('physicalStateLabel', () {

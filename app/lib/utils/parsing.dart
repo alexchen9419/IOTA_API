@@ -33,10 +33,19 @@ String asText(dynamic value, {String fallback = '—'}) {
 }
 
 /// 解析後端回傳的時間字串（`YYYY-MM-DD HH:MM:SS`）。
+///
+/// 後端一律以 UTC naive datetime 存/讀（見 `get_family_dashboard.py` 的
+/// `_utc_now()` 註記），字串本身不帶時區標記。`DateTime.tryParse` 對沒有
+/// 時區標記的字串會當成「本地時間」解讀，導致剛回報的裝置狀態被誤判成
+/// 8 小時前（UTC+8）。這裡明確補上 `Z` 再解析，並轉回本地時間顯示。
 DateTime? asDateTime(dynamic value) {
   if (value == null) return null;
   if (value is DateTime) return value;
-  return DateTime.tryParse(value.toString().trim().replaceFirst(' ', 'T'));
+  final iso = value.toString().trim().replaceFirst(' ', 'T');
+  if (iso.isEmpty) return null;
+  final hasZone = iso.endsWith('Z') || RegExp(r'[+-]\d\d:?\d\d$').hasMatch(iso);
+  final utc = DateTime.tryParse(hasZone ? iso : '${iso}Z');
+  return utc?.toLocal();
 }
 
 /// 取名字的第一個字當頭像文字。
@@ -144,10 +153,15 @@ String relativeTime(dynamic value, {String fallback = '從未回報'}) {
   return '${dt.year}-${_two(dt.month)}-${_two(dt.day)}';
 }
 
-/// 格式化成後端接受的 `YYYY-MM-DD HH:MM:SS`。
-String formatForApi(DateTime dt) =>
-    '${dt.year}-${_two(dt.month)}-${_two(dt.day)} '
-    '${_two(dt.hour)}:${_two(dt.minute)}:00';
+/// 格式化成後端接受的 `YYYY-MM-DD HH:MM:SS`（UTC naive，見 [asDateTime]）。
+///
+/// `dt` 通常來自日期/時間選擇器（本地時間），送出前先轉成 UTC，
+/// 才會跟後端「DATETIME 欄位一律存 UTC」的假設一致。
+String formatForApi(DateTime dt) {
+  final utc = dt.toUtc();
+  return '${utc.year}-${_two(utc.month)}-${_two(utc.day)} '
+      '${_two(utc.hour)}:${_two(utc.minute)}:00';
+}
 
 /// 顯示用的時間格式。
 String formatDisplay(dynamic value, {String fallback = '未設定'}) {
