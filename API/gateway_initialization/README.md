@@ -5,8 +5,8 @@
 | 項目 | 內容 |
 | --- | --- |
 | 對應 UC | UC1.3 閘道器初始化與屋主綁定 |
-| 對應檔案 | `api/gateway_initialization/provision_gateway_identity.py`、`gateway_initialize.py`、`get_gateway_initialization_status.py`、`gateway_init_common.py` |
-| 方法 | `gateway_initialize.py`、`get_gateway_initialization_status.py` 使用 POST；`provision_gateway_identity.py` 為 Gateway 本機 CLI 工具 |
+| 對應檔案 | `IOTA_API/API/gateway_initialization/provision_gateway_identity.py`、`gateway_initialize.py`、`get_gateway_initialization_status.py`、`gateway_init_common.py` |
+| 方法 | 初始化及查詢以 POST / CGI stdin 部署，兩支程式未自行強制拒絕所有非 POST；provision 為 Gateway CLI；common 為匯入模組 |
 | Endpoint | CGI 部署時可對應 `/cgi-bin/gateway_initialize.py`、`/cgi-bin/get_gateway_initialization_status.py` |
 | Content-Type | application/json; charset=utf-8 |
 | 是否使用 ECDH | 否。UC1.3 使用 `SECP256R1 / P-256` 建立 Gateway 長期 Identity Key；Gateway ↔ ESP32 ECDH 屬於 UC2.1。 |
@@ -137,7 +137,7 @@ python -u gateway_initialization/provision_gateway_identity.py --rotate-token
 
 ## API → App / Gateway Response Packet
 
-### 初始化成功
+### 初始化成功（HTTP 201）
 
 ```json
 {
@@ -168,17 +168,24 @@ python -u gateway_initialization/provision_gateway_identity.py --rotate-token
       "current_hash": "sha256_hex"
     },
     "genesis_event": {
-      "event_id": "LEDGER_xxx",
+      "event_id": "<uuid>",
+      "dedup_key": "UC1.3:SITE_GENESIS_CREATED:FAMILY:12",
+      "uc_id": "UC1.3",
       "event_type": "SITE_GENESIS_CREATED",
       "status": "PENDING",
       "payload_hash": "sha256_hex",
+      "ledger_reference": null,
+      "created": true,
       "note": "目前僅建立待上鏈事件；未接入 IOTA Ledger Worker 前維持 PENDING"
     }
   }
 }
 ```
 
-### 已初始化的 Idempotent Response
+### 已初始化的 Idempotent Response（HTTP 200）
+
+相同 owner 密碼驗證成功且 Gateway identity 與 DB 一致時回傳；此分支不重新驗證 token 的未消耗狀態，但仍要求初始化請求的必要欄位非空。
+
 
 ```json
 {
@@ -187,7 +194,20 @@ python -u gateway_initialization/provision_gateway_identity.py --rotate-token
   "data": {
     "already_initialized": true,
     "family_id": 12,
-    "gateway_id": "GW_0A1B2C3D4E5F67890123"
+    "family_name": "台北住家",
+    "gateway_id": "GW_<fingerprint_prefix>",
+    "gateway_name": "台北住家 Gateway",
+    "gateway_status": "Active",
+    "owner_user_id": "uc13_admin",
+    "public_key_fingerprint": "<sha256_hex>",
+    "initialized_at": "2026-09-30 11:30:00",
+    "genesis_event": {
+      "event_id": "<uuid>",
+      "event_type": "SITE_GENESIS_CREATED",
+      "ledger_status": "PENDING",
+      "payload_hash": "<sha256_hex>",
+      "ledger_reference": null
+    }
   }
 }
 ```
@@ -219,16 +239,19 @@ python -u gateway_initialization/provision_gateway_identity.py --rotate-token
 }
 ```
 
+
 ## Error Responses
+
+本組 API 實際不輸出舊表中的 AUTH_FAILED 等具名 code；以下以 HTTP 與 msg 情境說明。
 
 | HTTP 狀態 | 錯誤碼 / 情境 | 說明 |
 | --- | --- | --- |
-| 400 | INVALID_JSON / MISSING_FIELD | JSON 格式錯誤、payload 格式錯誤，或缺少 `user_id`、`password`、`family_name`、`gateway_name`、`initialization_token`。 |
-| 401 | AUTH_FAILED | 使用者不存在、密碼錯誤或密碼 Hash 無法驗證。 |
-| 403 | USER_DISABLED / TOKEN_INVALID / ROLE_DENIED | 帳號停用、Initialization Token 驗證失敗，或查詢者不是該場域 Admin。 |
-| 409 | GATEWAY_IDENTITY_CONFLICT / TOKEN_USED / IDENTITY_INVALID | Gateway Identity、Private/Public Key、Fingerprint、Owner 綁定或 Bootstrap 狀態衝突。 |
-| 410 | TOKEN_EXPIRED | Initialization Token 已過期，需在 Gateway 本機使用 `--rotate-token` 重發。 |
-| 500 | DB_DRIVER_MISSING / DATA_INCONSISTENT / INTERNAL_ERROR | 資料庫、SQL、Genesis Event 缺失或伺服器內部錯誤。 |
+| 400 | 無輸入 / JSON / 缺欄位 / 名稱超長 | 初始化必要欄位或格式不符 |
+| 401 | 帳號或密碼錯誤 | Bcrypt 驗證失敗 |
+| 403 | 帳號停用 / token 驗證失敗 / 查詢權限不足 | 依實際流程拒絕 |
+| 409 | identity / fingerprint / key pair / owner / bootstrap 衝突 | 包含初始化碼已使用 |
+| 410 | 初始化碼過期 | Gateway 端 rotate-token |
+| 500 | DB / 已初始化缺 Genesis / 其他內部錯誤 | API 回 status=Error 與 msg，可能含 data 或 detail |
 
 ## 注意事項
 
@@ -276,3 +299,49 @@ printf '{"payload":{"user_id":"uc13_admin","password":"Pass12345","family_name":
 printf '{"payload":{"user_id":"uc13_admin","password":"Pass12345"}}' \
 | python -u gateway_initialization/get_gateway_initialization_status.py
 ```
+
+## gateway_init_common.py 共用函式 I/O
+
+此檔由 provision_gateway_identity.py、gateway_initialize.py、get_gateway_initialization_status.py 匯入，沒有可單獨呼叫的 HTTP endpoint。原 App POST 欄位保留。
+
+| 函式 | 輸入 | 輸出 / 副作用 |
+| --- | --- | --- |
+| normalize_payload(raw_data) | JSON 字串 | payload dict；接受包裝或直接 object；錯誤 ApiError |
+| get_conn() | DB_HOST / DB_USER / DB_PASS / DB_NAME | DictCursor、autocommit=False 的 DB connection |
+| load_and_validate_identity(state_dir=None) | 本機 identity / private key | identity dict；驗證 P-256、公鑰 fingerprint、Gateway ID、private/public 一致 |
+| verify_initialization_token(initialization_token, identity, state_dir=None) | 初始化碼及 identity | bootstrap dict；驗證同 Gateway、未消耗、期限、Hash |
+| require_active_user_password(cursor, user_id, password, for_update=False) | DB cursor 及密碼 | 含 id/user_id 的使用者 dict；要求 Active 與 Bcrypt 驗證 |
+| append_audit_log(cursor, *, user, family_id, action, parameters, status="Verified", decision="ALLOW", reason=None) | user 必須含 id、user_id | INSERT audit；回 command_id/timestamp/prev_hash/current_hash；不 commit |
+| build_genesis_payload(*, user_id, family_id, family_name, identity) | 已驗證身分、家庭與 identity | 只回 UC1.3 業務 Payload：owner_binding、gateway、genesis；不寫 DB |
+| insert_genesis_ledger_event(cursor, *, user_id, family_id, identity, genesis_payload) | 上述 payload 與 cursor | 呼叫 common.enqueue_ledger_event；回統一 metadata，新增 UUID event_id、created=true，既有 created=false；不 commit |
+| fetch_gateway_initialization(cursor, gateway_id, for_update=False) | Gateway ID | join gateways/families 的 dict 或 None |
+| fetch_genesis_event(cursor, family_id) | 家庭 ID | 依 UC1.3 dedup_key 查 Ledger DB row 或 None |
+| require_admin_access_to_gateway(cursor, user_id, gateway) | 使用者與 Gateway dict | Admin 時無回傳值，否則 ApiError 403 |
+| mark_bootstrap_consumed(*, family_id, identity, state_dir=None) | commit 後的家庭與 identity | 更新本機 bootstrap 為 consumed，清除 token hash；不寫 DB |
+
+## UC1.3 Ledger 共用化更動
+
+insert_genesis_ledger_event 已委派 common/ledger_event_service.py，統一 envelope、canonical JSON、完整事件 payload_hash、UUID event_id 與 metadata。dedup_key 保留 `UC1.3:SITE_GENESIS_CREATED:FAMILY:{family_id}`。build_genesis_payload 只產生業務 payload；不可再自行包完整 envelope 傳入 genesis_payload。
+
+初始化成功仍回 data.genesis_event，而不是改成 data.ledger_event；其中新增 dedup_key、uc_id、ledger_reference、created。首次成功 201，重送 200。DB commit 後寫本機 bootstrap 失敗時回成功並加 data.local_state_warning，重送相同 owner 請求可修復本機狀態。
+
+共用模組的 append_audit_log 仍是 UC1.3 本地 writer，簽名與 common/audit_log_service.py 不相同，不要互換。它保留 user.id / u_id 和 tx- 前綴。
+
+## 共用函式呼叫範例
+
+在 gateway_initialize.py 已完成使用者及 identity 驗證並更新家庭 / Gateway 後：
+
+```python
+# cursor 已屬於呼叫端的 transaction，identity/user/family 已驗證。
+genesis_payload = build_genesis_payload(
+    user_id=user["user_id"], family_id=family_id,
+    family_name=family_name, identity=identity,
+)
+event = insert_genesis_ledger_event(
+    cursor, user_id=user["user_id"], family_id=family_id,
+    identity=identity, genesis_payload=genesis_payload,
+)
+# 家庭、Gateway、audit、ledger 全部成功後由呼叫端 conn.commit()。
+```
+
+所有範例中的 `<uuid>`、`<sha256_hex>`、`<previous_hash>` 等為示意值；實際值由程式產生。Ledger Event 的 `PENDING` 只代表待上鏈紀錄已建立，不代表 IOTA 已確認。

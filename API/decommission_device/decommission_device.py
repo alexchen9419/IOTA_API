@@ -2,14 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """
-UC2.3 終端設備除役與安全解綁（不含身分驗證、不含 device_credentials 版）
+UC2.3 終端設備除役與安全解綁（含 Admin 場域驗證、憑證撤銷與 Ledger Event）
 
 功能重點：
-1. 停用指定設備，不做 Token、密碼或角色驗證。
+1. 驗證操作者為設備所屬場域 Admin。
 2. 不刪除 devices 資料列，改為 status=Revoked、pairing_status=unpaired。
 3. 清空 session_key_hash，表示設備目前信任鏈與會話金鑰失效。
 4. 寫入 audit_logs，使用 prev_hash + current_hash 保留鏈式稽核紀錄。
-5. 不建立、不查詢、不更新 device_credentials 表。
+5. 撤銷 device_credentials，並在同一 transaction 建立 DEVICE_DECOMMISSIONED Ledger Event。
 
 測試：
 printf '{"payload":{"device_id":"ESP32_LOCK_001","reason":"汰換舊設備","operator_user_id":"admin001"}}' \
@@ -23,10 +23,22 @@ import re
 import sys
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import pymysql
 from dotenv import load_dotenv
+
+API_ROOT = Path(__file__).resolve().parents[1]
+if str(API_ROOT) not in sys.path:
+    sys.path.insert(0, str(API_ROOT))
+
+from common.ledger_event_service import (
+    enqueue_ledger_event,
+    get_ledger_event_by_dedup,
+    hash_identifier,
+    iso_utc,
+)
 
 load_dotenv()
 DB_HOST = os.getenv("DB_HOST", "localhost")
@@ -140,6 +152,69 @@ def insert_audit_log(cursor, *, operator_user_id: Optional[str], device_id: Opti
     }
 
 
+
+def require_family_admin(cursor, user_id: str, family_id: int) -> None:
+    if not user_id:
+        response_json({"status": "Error", "msg": "operator_user_id 為必填"}, 400)
+    cursor.execute(
+        "SELECT role FROM user_families WHERE user_id=%s AND family_id=%s LIMIT 1",
+        (user_id, int(family_id)),
+    )
+    row = cursor.fetchone()
+    if not row or str(row.get("role") or "").lower() != "admin":
+        response_json({"status": "Error", "msg": "權限拒絕：只有設備所屬場域 Admin 可除役設備"}, 403)
+
+
+def revoke_device_credential(
+    cursor,
+    *,
+    device: Dict[str, Any],
+    operator_user_id: str,
+    reason: str,
+) -> Dict[str, Any]:
+    """Revoke the current device credential used by the pairing lifecycle."""
+    if not table_exists(cursor, "device_credentials"):
+        raise RuntimeError("缺少 device_credentials；請先執行 migration_complete_ledger_events.sql")
+
+    device_id = str(device["device_id"])
+    family_id = int(device.get("family_id")) if device.get("family_id") is not None else None
+    gateway_id = device.get("gateway_id")
+    credential_id = f"CRED_{hashlib.sha256(device_id.encode('utf-8')).hexdigest()[:32]}"
+
+    cursor.execute("SELECT * FROM device_credentials WHERE credential_id=%s FOR UPDATE", (credential_id,))
+    credential = cursor.fetchone()
+    if not credential:
+        public_key = str(device.get("device_public_key") or "")
+        if not public_key:
+            raise RuntimeError("設備缺少可撤銷的 credential/public key；請先重新執行 UC2.1 配對")
+        public_key_hash = hashlib.sha256(public_key.encode("utf-8")).hexdigest()
+        cursor.execute(
+            """
+            INSERT INTO device_credentials
+              (credential_id, device_id, family_id, gateway_id, credential_type,
+               public_key_hash, status, issued_at, revoked_at, revoked_by, revocation_reason)
+            VALUES (%s, %s, %s, %s, 'ECDH_DEVICE_PUBLIC_KEY', %s,
+                    'Revoked', UTC_TIMESTAMP(), UTC_TIMESTAMP(), %s, %s)
+            """,
+            (credential_id, device_id, family_id, gateway_id, public_key_hash, operator_user_id, reason),
+        )
+    else:
+        cursor.execute(
+            """
+            UPDATE device_credentials
+            SET status='Revoked', revoked_at=UTC_TIMESTAMP(), revoked_by=%s, revocation_reason=%s
+            WHERE credential_id=%s
+            """,
+            (operator_user_id, reason, credential_id),
+        )
+
+    return {
+        "credential_id": credential_id,
+        "credential_id_hash": hash_identifier(credential_id),
+        "revocation_status": "REVOKED",
+    }
+
+
 def normalize_payload(raw_data: str) -> Dict[str, Any]:
     if not raw_data:
         response_json({"status": "Error", "msg": "無輸入資料"}, 400)
@@ -160,6 +235,8 @@ def main() -> None:
     device_id = str(payload.get("device_id") or "").strip()
     operator_user_id = payload.get("operator_user_id") or payload.get("admin_user_id") or payload.get("user_id")
     reason = str(payload.get("reason") or "UC2.3 device decommission").strip()
+    reason_code = str(payload.get("reason_code") or "ADMIN_DEVICE_DECOMMISSION").strip().upper()
+    revoked_at = iso_utc()
 
     if not device_id:
         response_json({"status": "Error", "msg": "欄位不齊全：需要 device_id"}, 400)
@@ -186,6 +263,16 @@ def main() -> None:
                 conn.commit()
                 response_json({"status": "Error", "msg": f"找不到設備：{device_id}", "audit": audit}, 404)
 
+            if device.get("family_id") is None:
+                response_json({"status": "Error", "msg": "設備缺少 family_id，無法建立場域範圍的除役事件"}, 409)
+            family_id = int(device["family_id"])
+            requested_family_id = payload.get("family_id")
+            if requested_family_id not in (None, "") and int(requested_family_id) != family_id:
+                response_json({"status": "Error", "msg": "family_id 與設備所屬場域不一致"}, 409)
+            require_family_admin(cursor, str(operator_user_id or ""), family_id)
+            gateway_id = str(device.get("gateway_id") or "") or None
+            dedup_key = f"UC2.3:DEVICE_DECOMMISSIONED:FAMILY:{family_id}:DEVICE:{device_id}"
+
             old_status = str(device.get("status") or "")
             old_pairing_status = str(device.get("pairing_status") or "")
             already_revoked = old_status.lower() in {"revoked", "retired", "decommissioned"}
@@ -199,16 +286,18 @@ def main() -> None:
                     parameters={"reason": reason, "old_status": old_status, "old_pairing_status": old_pairing_status},
                     status="Verified",
                 )
+                existing_ledger = get_ledger_event_by_dedup(cursor, dedup_key)
                 conn.commit()
                 response_json({
                     "status": "Success",
-                    "msg": "設備已是除役/撤銷狀態，未重複更新",
+                    "msg": "設備已是除役/撤銷狀態，未重複建立除役 Ledger Event",
                     "data": {
                         "device_id": device_id,
                         "previous_status": old_status,
                         "new_status": old_status,
                         "previous_pairing_status": old_pairing_status,
                         "audit": audit,
+                        "ledger_event": existing_ledger,
                     },
                 })
 
@@ -244,6 +333,13 @@ def main() -> None:
                         (device_id, "Revoked", stable_json({"event": "UC2.3_DEVICE_DECOMMISSION", "reason": reason})),
                     )
 
+            credential = revoke_device_credential(
+                cursor,
+                device=device,
+                operator_user_id=str(operator_user_id),
+                reason=reason,
+            )
+
             audit_params = {
                 "reason": reason,
                 "operator_user_id": operator_user_id,
@@ -262,10 +358,46 @@ def main() -> None:
                 status="Verified",
             )
 
+            ledger_event = enqueue_ledger_event(
+                cursor,
+                uc_id="UC2.3",
+                event_type="DEVICE_DECOMMISSIONED",
+                dedup_key=dedup_key,
+                family_id=family_id,
+                gateway_id=gateway_id,
+                device_id=device_id,
+                created_by=str(operator_user_id),
+                source="SERVER",
+                timestamp=revoked_at,
+                actor={
+                    "actor_type": "USER",
+                    "actor_id_hash": hash_identifier(operator_user_id),
+                    "actor_role": "ADMIN",
+                },
+                payload={
+                    "status_change": {
+                        "previous_status": old_status.upper() or "UNKNOWN",
+                        "new_status": "DECOMMISSIONED",
+                        "pairing_status": "UNPAIRED",
+                    },
+                    "credential_revocation": {
+                        "credential_id_hash": credential["credential_id_hash"],
+                        "revocation_status": credential["revocation_status"],
+                        "revoked_at": revoked_at,
+                    },
+                    "trust_chain_terminated": True,
+                    "reason": {
+                        "reason_code": reason_code,
+                        "reason_detail_hash": hash_identifier(reason),
+                    },
+                    "operated_by_hash": hash_identifier(operator_user_id),
+                },
+            )
+
             conn.commit()
             response_json({
                 "status": "Success",
-                "msg": "UC2.3 終端設備除役與安全解綁完成（不含身分驗證、不含 device_credentials 版）",
+                "msg": "UC2.3 終端設備除役、安全解綁與 Ledger Event 建立完成",
                 "data": {
                     "device_id": device_id,
                     "previous_status": old_status,
@@ -273,7 +405,9 @@ def main() -> None:
                     "previous_pairing_status": old_pairing_status,
                     "new_pairing_status": "unpaired" if "pairing_status" in device_cols else None,
                     "session_key_hash_revoked": "session_key_hash" in device_cols,
+                    "credential_revocation": credential,
                     "audit": audit,
+                    "ledger_event": ledger_event,
                 },
             })
 

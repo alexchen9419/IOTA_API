@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS user_families (
   start_time DATETIME NULL,
   end_time   DATETIME NULL,
   max_uses   INT NULL,
+  guest_grant_id VARCHAR(191) NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uq_user_family (user_id, family_id),
   KEY idx_family (family_id)
@@ -77,6 +78,23 @@ CREATE TABLE IF NOT EXISTS devices (
   KEY idx_family (family_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS device_credentials (
+  credential_id      VARCHAR(191) PRIMARY KEY,
+  device_id          VARCHAR(191) NOT NULL,
+  family_id          INT,
+  gateway_id         VARCHAR(191),
+  credential_type    VARCHAR(64) NOT NULL DEFAULT 'ECDH_DEVICE_PUBLIC_KEY',
+  public_key_hash    CHAR(64) NOT NULL,
+  status             VARCHAR(32) NOT NULL DEFAULT 'Active',
+  issued_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  revoked_at         DATETIME NULL,
+  revoked_by         VARCHAR(191),
+  revocation_reason  VARCHAR(255),
+  KEY idx_device_credential_device (device_id, status),
+  KEY idx_device_credential_family (family_id),
+  KEY idx_device_credential_gateway (gateway_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS audit_logs (
   id           INT AUTO_INCREMENT PRIMARY KEY,
   command_id   VARCHAR(191),
@@ -112,6 +130,10 @@ CREATE TABLE IF NOT EXISTS guest_tokens (
   used_count      INT NOT NULL DEFAULT 0,
   max_uses        INT NOT NULL DEFAULT 1,
   revoked         TINYINT(1) NOT NULL DEFAULT 0,
+  revoked_at      DATETIME NULL,
+  revoked_by      VARCHAR(191),
+  revocation_reason_code VARCHAR(64),
+  revocation_reason_hash CHAR(64),
   created_by      VARCHAR(191),
   last_used_at    DATETIME NULL,
   created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -215,6 +237,7 @@ CREATE TABLE IF NOT EXISTS ledger_events (
   event_type       VARCHAR(191) NOT NULL,
   family_id        INT,
   gateway_id       VARCHAR(191),
+  device_id        VARCHAR(191),
   created_by       VARCHAR(191),
   payload          JSON NOT NULL,
   payload_hash     CHAR(64) NOT NULL,
@@ -230,5 +253,108 @@ CREATE TABLE IF NOT EXISTS ledger_events (
   KEY idx_ledger_status_created (status, created_at),
   KEY idx_ledger_family (family_id, created_at),
   KEY idx_ledger_gateway (gateway_id, created_at),
+  KEY idx_ledger_device (device_id, created_at),
   KEY idx_ledger_event_type (event_type, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+CREATE TABLE IF NOT EXISTS security_events (
+  security_event_id VARCHAR(191) PRIMARY KEY,
+  dedup_key         VARCHAR(191) NOT NULL UNIQUE,
+  family_id         INT NOT NULL,
+  gateway_id        VARCHAR(191),
+  device_id         VARCHAR(191),
+  request_id        VARCHAR(191),
+  anomaly_type      VARCHAR(64) NOT NULL,
+  severity          VARCHAR(16) NOT NULL,
+  detected_by       VARCHAR(64),
+  reason_code       VARCHAR(64),
+  evidence_hash     CHAR(64),
+  occurred_at       DATETIME NOT NULL,
+  created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_security_family_time (family_id, occurred_at),
+  KEY idx_security_type_time (anomaly_type, occurred_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS physical_override_events (
+  event_id          VARCHAR(191) PRIMARY KEY,
+  idempotency_key   VARCHAR(191) NOT NULL UNIQUE,
+  family_id         INT NOT NULL,
+  gateway_id        VARCHAR(191) NOT NULL,
+  device_id         VARCHAR(191) NOT NULL,
+  local_sequence    BIGINT NOT NULL,
+  event_timestamp   DATETIME NOT NULL,
+  received_at       DATETIME NOT NULL,
+  action             VARCHAR(64),
+  previous_state     VARCHAR(32),
+  new_state          VARCHAR(32),
+  source_payload_hash CHAR(64) NOT NULL,
+  signer_key_id      VARCHAR(191) NOT NULL,
+  signature          TEXT NOT NULL,
+  created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_override_sequence (gateway_id, device_id, local_sequence),
+  KEY idx_override_family_time (family_id, event_timestamp)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 既有資料庫增量更新：先檢查 information_schema，已存在則略過。
+SET @db_name = DATABASE();
+
+-- ledger_events.device_id
+SET @sql = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA=@db_name AND TABLE_NAME='ledger_events' AND COLUMN_NAME='device_id'
+  ),
+  'SELECT 1',
+  'ALTER TABLE ledger_events ADD COLUMN device_id VARCHAR(191) NULL AFTER gateway_id'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- ledger_events(device_id, created_at) index
+SET @sql = IF(
+  EXISTS(
+    SELECT 1 FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA=@db_name AND TABLE_NAME='ledger_events' AND INDEX_NAME='idx_ledger_device'
+  ),
+  'SELECT 1',
+  'CREATE INDEX idx_ledger_device ON ledger_events (device_id, created_at)'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- guest_tokens revocation metadata
+SET @sql = IF(
+  EXISTS(SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=@db_name AND TABLE_NAME='guest_tokens' AND COLUMN_NAME='revoked_at'),
+  'SELECT 1',
+  'ALTER TABLE guest_tokens ADD COLUMN revoked_at DATETIME NULL AFTER revoked'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF(
+  EXISTS(SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=@db_name AND TABLE_NAME='guest_tokens' AND COLUMN_NAME='revoked_by'),
+  'SELECT 1',
+  'ALTER TABLE guest_tokens ADD COLUMN revoked_by VARCHAR(191) NULL AFTER revoked_at'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF(
+  EXISTS(SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=@db_name AND TABLE_NAME='guest_tokens' AND COLUMN_NAME='revocation_reason_code'),
+  'SELECT 1',
+  'ALTER TABLE guest_tokens ADD COLUMN revocation_reason_code VARCHAR(64) NULL AFTER revoked_by'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF(
+  EXISTS(SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=@db_name AND TABLE_NAME='guest_tokens' AND COLUMN_NAME='revocation_reason_hash'),
+  'SELECT 1',
+  'ALTER TABLE guest_tokens ADD COLUMN revocation_reason_hash CHAR(64) NULL AFTER revocation_reason_code'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- QR 訪客帳號每次核發的授權識別，防止帳號重用造成撤銷去重衝突。
+SET @db_name = DATABASE();
+SET @sql = IF(
+  EXISTS(SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=@db_name AND TABLE_NAME='user_families' AND COLUMN_NAME='guest_grant_id'),
+  'SELECT 1',
+  'ALTER TABLE user_families ADD COLUMN guest_grant_id VARCHAR(191) NULL AFTER max_uses'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;

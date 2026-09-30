@@ -30,6 +30,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+API_ROOT = Path(__file__).resolve().parents[1]
+if str(API_ROOT) not in sys.path:
+    sys.path.insert(0, str(API_ROOT))
+
+from common.ledger_event_service import enqueue_ledger_event
+
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import load_pem_private_key, load_pem_public_key
@@ -513,6 +519,7 @@ def build_genesis_payload(
     family_name: str,
     identity: Dict[str, Any],
 ) -> Dict[str, Any]:
+    """Build the UC1.3 event-specific payload section."""
     configuration = {
         "family_id": int(family_id),
         "family_name": family_name,
@@ -524,39 +531,27 @@ def build_genesis_payload(
     }
     configuration_hash = sha256_text(stable_json(configuration))
     user_hash = sha256_text(user_id)
+    bound_at = iso_utc()
 
     return {
-        "schema_version": GENESIS_SCHEMA_VERSION,
-        "uc_id": UC_ID,
-        "event_type": GENESIS_EVENT_TYPE,
-        "family_id": int(family_id),
-        "gateway_id": identity["gateway_id"],
-        "source": "GATEWAY",
-        "occurred_at": iso_utc(),
-        "actor": {
-            "actor_type": "USER",
-            "actor_id_hash": f"sha256:{user_hash}",
-            "actor_role": "ADMIN",
+        "owner_binding": {
+            "owner_id_hash": f"sha256:{user_hash}",
+            "role": "ADMIN",
+            "binding_method": BINDING_METHOD,
+            "bound_at": bound_at,
         },
-        "payload": {
-            "owner_binding": {
-                "owner_id_hash": f"sha256:{user_hash}",
-                "role": "ADMIN",
-                "binding_method": BINDING_METHOD,
-            },
-            "gateway": {
-                "gateway_id": identity["gateway_id"],
-                "hardware_model": identity["hardware_model"],
-                "firmware_version": identity["firmware_version"],
-                # fingerprint 本身就是 public key DER 的 SHA-256。
-                "public_key_hash": f"sha256:{identity['public_key_fingerprint']}",
-                "initial_status": "ACTIVE",
-            },
-            "genesis": {
-                "genesis_type": "FAMILY_SITE_GENESIS",
-                "previous_block_hash": None,
-                "configuration_hash": f"sha256:{configuration_hash}",
-            },
+        "gateway": {
+            "gateway_id": identity["gateway_id"],
+            "hardware_model": identity["hardware_model"],
+            "firmware_version": identity["firmware_version"],
+            # fingerprint 本身就是 public key DER 的 SHA-256。
+            "public_key_hash": f"sha256:{identity['public_key_fingerprint']}",
+            "initial_status": "ACTIVE",
+        },
+        "genesis": {
+            "genesis_type": "FAMILY_SITE_GENESIS",
+            "previous_block_hash": None,
+            "configuration_hash": f"sha256:{configuration_hash}",
         },
     }
 
@@ -569,38 +564,24 @@ def insert_genesis_ledger_event(
     identity: Dict[str, Any],
     genesis_payload: Dict[str, Any],
 ) -> Dict[str, Any]:
-    event_id = f"LEDGER_{uuid.uuid4().hex}"
     dedup_key = f"UC1.3:SITE_GENESIS_CREATED:FAMILY:{int(family_id)}"
-    payload_json = stable_json(genesis_payload)
-    payload_hash = sha256_text(payload_json)
-
-    cursor.execute(
-        """
-        INSERT INTO ledger_events
-          (event_id, dedup_key, uc_id, event_type, family_id, gateway_id,
-           created_by, payload, payload_hash, status, retry_count)
-        VALUES
-          (%s, %s, %s, %s, %s, %s, %s, CAST(%s AS JSON), %s, 'PENDING', 0)
-        """,
-        (
-            event_id,
-            dedup_key,
-            UC_ID,
-            GENESIS_EVENT_TYPE,
-            family_id,
-            identity["gateway_id"],
-            user_id,
-            payload_json,
-            payload_hash,
-        ),
+    user_hash = sha256_text(user_id)
+    return enqueue_ledger_event(
+        cursor,
+        uc_id=UC_ID,
+        event_type=GENESIS_EVENT_TYPE,
+        dedup_key=dedup_key,
+        family_id=int(family_id),
+        gateway_id=str(identity["gateway_id"]),
+        created_by=user_id,
+        source="SERVER",
+        actor={
+            "actor_type": "USER",
+            "actor_id_hash": f"sha256:{user_hash}",
+            "actor_role": "ADMIN",
+        },
+        payload=genesis_payload,
     )
-    return {
-        "event_id": event_id,
-        "dedup_key": dedup_key,
-        "event_type": GENESIS_EVENT_TYPE,
-        "status": "PENDING",
-        "payload_hash": payload_hash,
-    }
 
 
 def fetch_gateway_initialization(cursor, gateway_id: str, *, for_update: bool = False):

@@ -18,6 +18,7 @@ Admin 透過 Gateway 與新終端裝置進行首次安全配對，
 8. 檢查該 device_id 是否已被 UC2.3 除役；若已除役則拒絕重新配對。
 9. 將裝置資料寫入 devices 表，並保持 UC2.3 除役欄位為 NULL。
 10. 將 DEVICE_REGISTERED 事件寫入 audit_logs 表，形成 prev_hash/current_hash 鏈式紀錄。
+11. 在同一個 MySQL transaction 建立 DEVICE_REGISTERED_AND_PAIRED ledger_events(PENDING)。
 
 POST JSON 格式：
 {
@@ -39,6 +40,7 @@ import os
 import sys
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import pymysql
@@ -46,6 +48,12 @@ from dotenv import load_dotenv
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+API_ROOT = Path(__file__).resolve().parents[1]
+if str(API_ROOT) not in sys.path:
+    sys.path.insert(0, str(API_ROOT))
+
+from common.ledger_event_service import enqueue_ledger_event, hash_identifier, iso_utc
 
 # 讀取 .env 檔案中的 MySQL 連線設定。
 # 例如：DB_HOST、DB_USER、DB_PASS、DB_NAME。
@@ -194,19 +202,64 @@ def build_ecdh_result(device_id: str, gateway_id: str, device_public_key_pem: Op
     }
 
 
-def get_user_auto_id(cursor, user_id: str) -> Optional[int]:
-    """
-    用 users.user_id 查詢 users.id。
+def resolve_family_id(cursor, family_id: Any, gateway_id: str) -> int:
+    """Resolve/validate the family scope used by the ledger event."""
+    requested = int(family_id) if family_id not in (None, "") else None
+    cursor.execute("SELECT family_id, status FROM gateways WHERE gateway_id=%s LIMIT 1", (gateway_id,))
+    gateway = cursor.fetchone()
+    if not gateway or gateway.get("family_id") is None:
+        raise ValueError("gateway_id 尚未完成 UC1.3 初始化或不存在")
+    gateway_family = int(gateway["family_id"])
+    if str(gateway.get("status") or "").lower() not in {"active", "initialized"}:
+        raise ValueError("gateway_id 目前不是可配對狀態")
+    if requested is not None and requested != gateway_family:
+        raise ValueError("family_id 與 gateway_id 所屬場域不一致")
+    return gateway_family
 
-    audit_logs 同時保存：
-    - user_id：例如 admin001，方便人類閱讀。
-    - u_id：資料庫內部自動遞增 ID，方便資料表關聯。
 
-    若目前測試資料庫沒有該使用者，仍允許配對繼續進行，u_id 會是 None。
-    """
-    cursor.execute("SELECT id FROM users WHERE user_id = %s", (user_id,))
-    row = cursor.fetchone()
-    return row["id"] if row else None
+def require_family_admin(cursor, user_id: str, family_id: int) -> int:
+    """Require an active platform user with Admin role in the target family."""
+    cursor.execute("SELECT id, status FROM users WHERE user_id=%s LIMIT 1", (user_id,))
+    user = cursor.fetchone()
+    if not user:
+        raise PermissionError("操作者帳號不存在")
+    if str(user.get("status") or "").lower() != "active":
+        raise PermissionError("操作者帳號不是 Active 狀態")
+    cursor.execute(
+        "SELECT role FROM user_families WHERE user_id=%s AND family_id=%s LIMIT 1",
+        (user_id, int(family_id)),
+    )
+    membership = cursor.fetchone()
+    if not membership or str(membership.get("role") or "").lower() != "admin":
+        raise PermissionError("只有該場域 Admin 可執行裝置配對")
+    return int(user["id"])
+
+
+def upsert_device_credential(
+    cursor,
+    *,
+    device_id: str,
+    family_id: int,
+    gateway_id: str,
+    device_public_key_hash: str,
+) -> str:
+    """Persist the current device public-key credential for UC2.3 revocation."""
+    credential_id = f"CRED_{hashlib.sha256(device_id.encode('utf-8')).hexdigest()[:32]}"
+    cursor.execute(
+        """
+        INSERT INTO device_credentials
+          (credential_id, device_id, family_id, gateway_id, credential_type,
+           public_key_hash, status, issued_at, revoked_at, revoked_by, revocation_reason)
+        VALUES
+          (%s, %s, %s, %s, 'ECDH_DEVICE_PUBLIC_KEY', %s, 'Active', UTC_TIMESTAMP(), NULL, NULL, NULL)
+        ON DUPLICATE KEY UPDATE
+          family_id=VALUES(family_id), gateway_id=VALUES(gateway_id),
+          public_key_hash=VALUES(public_key_hash), status='Active',
+          issued_at=UTC_TIMESTAMP(), revoked_at=NULL, revoked_by=NULL, revocation_reason=NULL
+        """,
+        (credential_id, device_id, family_id, gateway_id, device_public_key_hash),
+    )
+    return credential_id
 
 
 def get_prev_hash(cursor) -> Optional[str]:
@@ -306,6 +359,7 @@ def main() -> None:
         device_type = (payload.get("device_type") or "smart_lock").strip()
         family_id = payload.get("family_id")
         device_public_key_pem = payload.get("device_public_key_pem")
+        paired_at = iso_utc()
 
         # UC2.1 最低必要資料。
         # family_id、gateway_id、device_name 有預設或可為空，但 owner_user_id / device_id / device_type 不可缺少。
@@ -322,13 +376,25 @@ def main() -> None:
         conn = get_conn()
         try:
             with conn.cursor() as cursor:
-                # 查詢使用者內部 ID；查不到時不阻擋測試流程。
-                u_id = get_user_auto_id(cursor, owner_user_id)
+                family_id = resolve_family_id(cursor, family_id, gateway_id)
+                u_id = require_family_admin(cursor, owner_user_id, family_id)
 
                 # UC2.3 相容性檢查：已除役設備不可由 UC2.1 直接重新配對。
                 # 避免被標記為 Revoked 的裝置重新取得 session_key_hash，造成除役後信任鏈被繞過。
-                cursor.execute("SELECT status, pairing_status FROM devices WHERE device_id = %s", (device_id,))
+                cursor.execute(
+                    "SELECT status, pairing_status, family_id, gateway_id FROM devices WHERE device_id = %s",
+                    (device_id,),
+                )
                 existing_device = cursor.fetchone()
+                if existing_device and existing_device.get("family_id") is not None and int(existing_device["family_id"]) != family_id:
+                    response_json(
+                        {
+                            "status": "Error",
+                            "msg": "此 device_id 已綁定其他場域，不可直接重新配對",
+                            "data": {"device_id": device_id, "bound_family_id": existing_device.get("family_id")},
+                        },
+                        409,
+                    )
                 if existing_device and str(existing_device.get("status") or "").lower() in {"revoked", "retired", "decommissioned"}:
                     response_json(
                         {
@@ -385,6 +451,14 @@ def main() -> None:
                     ),
                 )
 
+                credential_id = upsert_device_credential(
+                    cursor,
+                    device_id=device_id,
+                    family_id=family_id,
+                    gateway_id=gateway_id,
+                    device_public_key_hash=device_public_key_hash,
+                )
+
                 # 準備寫入 audit_logs 的參數。
                 # 這些資料會成為 DEVICE_REGISTERED 交易的一部分，也會參與 current_hash 計算。
                 audit_parameters = {
@@ -401,17 +475,58 @@ def main() -> None:
                     "simulated_device": ecdh_result["simulated_device"],
                 }
 
-                # 寫入 UC2.1 上鏈稽核紀錄。
+                # 寫入 UC2.1 本機稽核紀錄。
                 tx = append_audit_log(cursor, owner_user_id, u_id, device_id, audit_parameters)
 
-                # devices 與 audit_logs 都成功後才 commit。
+                ledger_payload = {
+                    "device_type": device_type.upper(),
+                    "device_name_hash": hash_identifier(device_name),
+                    "initial_status": {
+                        "pairing_status": "PAIRED",
+                        "operational_status": "ACTIVE",
+                        "physical_state": str(payload.get("physical_state") or "UNKNOWN").upper(),
+                    },
+                    "security_pairing": {
+                        "protocol": "ECDH",
+                        "curve": "SECP256R1",
+                        "device_public_key_hash": f"sha256:{device_public_key_hash}",
+                        "gateway_public_key_hash": f"sha256:{gateway_public_key_hash}",
+                        "session_key_hash": f"sha256:{ecdh_result['session_key_hash']}",
+                        "pairing_result": "SUCCESS",
+                    },
+                    "paired_at": paired_at,
+                    "created_by_hash": hash_identifier(owner_user_id),
+                }
+                ledger_event = enqueue_ledger_event(
+                    cursor,
+                    uc_id="UC2.1",
+                    event_type="DEVICE_REGISTERED_AND_PAIRED",
+                    dedup_key=(
+                        f"UC2.1:DEVICE_REGISTERED_AND_PAIRED:FAMILY:{family_id}:"
+                        f"DEVICE:{device_id}:SESSION:{ecdh_result['session_key_hash']}"
+                    ),
+                    family_id=family_id,
+                    gateway_id=gateway_id,
+                    device_id=device_id,
+                    created_by=owner_user_id,
+                    source="GATEWAY",
+                    timestamp=paired_at,
+                    actor={
+                        "actor_type": "USER",
+                        "actor_id_hash": hash_identifier(owner_user_id),
+                        "actor_role": "ADMIN",
+                    },
+                    payload=ledger_payload,
+                )
+
+                # devices、device_credentials、audit_logs 與 ledger_events 一起 commit。
                 conn.commit()
 
             # 回傳 App 顯示用結果。
             response_json(
                 {
                     "status": "Success",
-                    "msg": "裝置註冊與安全配對成功，初始狀態已寫入公有鏈稽核日誌",
+                    "msg": "裝置註冊與安全配對成功，Ledger Event 已加入待上鏈佇列",
                     "data": {
                         "device_id": device_id,
                         "device_name": device_name,
@@ -425,7 +540,9 @@ def main() -> None:
                         "device_public_key_hash": device_public_key_hash,
                         "gateway_public_key_hash": gateway_public_key_hash,
                         "session_key_hash": ecdh_result["session_key_hash"],
-                        "ledger": tx,
+                        "credential_id": credential_id,
+                        "audit_log": tx,
+                        "ledger_event": ledger_event,
                     },
                 }
             )
@@ -434,6 +551,10 @@ def main() -> None:
 
     except json.JSONDecodeError:
         response_json({"status": "Error", "msg": "JSON 格式錯誤"}, 400)
+    except PermissionError as e:
+        response_json({"status": "Error", "msg": str(e)}, 403)
+    except ValueError as e:
+        response_json({"status": "Error", "msg": str(e)}, 400)
     except Exception as e:
         # 測試階段保留 detail，方便除錯。
         # 正式部署時可以移除 detail，避免暴露伺服器內部資訊。
