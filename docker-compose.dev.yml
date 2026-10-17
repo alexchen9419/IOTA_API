@@ -31,3 +31,9 @@ services:
     environment:
       MQTT_PORT: "1883"
       MQTT_USE_TLS: "0"
+
+  mqtt-monitor:
+    profiles: ["maintenance"]
+    environment:
+      MQTT_PORT: "1883"
+      MQTT_USE_TLS: "0"
