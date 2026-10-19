@@ -75,6 +75,9 @@ ROUTES: dict[str, tuple[str, tuple[str, ...]]] = {
 
 app = FastAPI(title="Family/Device Management API")
 
+from ledger_bridge.router import router as ledger_router
+app.include_router(ledger_router)
+
 # Flutter Web 版（`flutter run -d chrome`）是從另一個 origin 發請求，沒有 CORS
 # 標頭瀏覽器會直接擋下來。部分 CGI 腳本（例如 list_devices.py）自己有印
 # Access-Control-Allow-Origin，但 run_cgi() 只解析 Status 與 Content-Type 兩個

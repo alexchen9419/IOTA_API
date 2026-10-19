@@ -15,3 +15,5 @@ mqtt-server/ota_keys/ota_signing_key.pem
 # MQTT TLS 私鑰，絕對不要進版控；ca.crt/server.crt 是公開憑證，可以進版控
 config/certs/ca.key
 config/certs/server.key
+.ledger.env
+ledger-backup-*/
