@@ -157,7 +157,7 @@ docker compose restart mqtt-server
 ## 檔案地圖
 
 ```
-docker-compose.yml        # mqtt-broker / mqtt-server / mqtt-monitor / node-red / mysql / api / api-mqtt-bridge
+docker-compose.yml        # mqtt-broker / mqtt-server / mqtt-monitor / node-red / mysql / api / api-mqtt-bridge / alert-service
 config/mosquitto.conf     # broker 設定（TLS-only 8883、允許匿名、persistence）
 config/certs/             # generate_certs.sh + CA/server 憑證（私鑰不進版控）
 mqtt-server/
@@ -193,14 +193,18 @@ API/                      # 家庭/裝置管理 CGI 後端，見「API 整合」
 1. 驗證觸控腳 doorbell / tamper 事件（燒錄新版 sketch → 摸腳位 → 看 server log）。假事件洗版的根因已找到並修掉（S3 觸控暖機，見上方「觸控除錯」），但**修完還沒真機驗證**；另外 `audit_logs` 裡有 614 筆當時灌進去的假 `DEVICE_EVENT`（device_id `28:84:85:5C:A2:E4`、family_id 為 NULL），要不要清掉還沒決定——那張表是雜湊鏈，刪列會斷鏈
 2. **OTA（含簽章驗證）尚未在實體 ESP32 上跑過**：簽章的產生/驗證邏輯已經在 server 端用假韌體交叉驗證過（正常簽章通過、竄改內容會正確被拒絕），但 Arduino 端「邊下載邊算 SHA-256 邊寫入 OTA 分區」這段從沒真機測過，需要實際燒錄驗證：正常簽章能更新成功、竄改過的 `.bin` 或漏簽的韌體會被裝置端拒絕且不會變磚。新增的 `POST /ota_update` 端點也還沒實機測過（Admin 權限檢查 → MQTT 發布這段目前只確認過程式邏輯沒有語法/連線錯誤）
 3. `ota_update.py` 不檢查 `firmware_file` 是否真的存在於 `mqtt-server/firmware/`、也不比對版本，打錯檔名或忘記簽章要等裝置端下載/驗證失敗才會發現，之後可以考慮讓 `mqtt-server` 開一支清單/校驗端點供 `ota_update.py` 呼叫
-4. handlers 的 TODO：doorbell 推播通知（Telegram / ntfy）、tamper 緊急警報
-5. Node-RED flow 接上 `home/#` 主題做視覺化（node_red 容器已在 compose 裡）
+4. ~~doorbell 推播 / tamper 警報~~ 已接上（2026-10-24）：`api-mqtt-bridge` → `home/security/gateway_<family>/alert` → 新的 `alert-service` 容器 → App MQTT 通知 + Telegram/ntfy（設定見 `API/alert_service/README.md`）。只用 stub 做過離線測試，**還沒在 Docker Compose 跑過、也沒真的送到 Telegram/ntfy**；要等第 1 項觸控驗證完才有真事件可測，在那之前可用 `test_event.py` 模擬（裝置要先配對，否則 bridge 不發 alert）
+5. Node-RED flow 接上 `home/#` 主題做視覺化（node_red 容器已在 compose 裡）。注意 `node-red-data/flows.json` 的 broker 還設 `1883`，正式設定 1883 已關，要改 8883 + TLS（CA 用 `config/certs/ca.crt`）才連得上
 6. 正式硬體：開門機構已改用 servo（GPIO18，0°~90°）並換板 ESP32-S3 N16R8，尚未真機驗證 servo 動作；實體按鈕取代觸控腳、讓韌體改讀 config 回傳的 `pins` 而不是寫死（models.yaml 的腳位定義也還是傳統 ESP32 的，要一併更新）
 7. `API/` 沒有「建立家庭」的 endpoint，目前得手動 `INSERT INTO families`，之後要補一支
 8. `docker-compose.yml` 裡 MySQL 的帳密（`devroot123`/`devpass123`）是本機開發用預設值，正式環境要換成真的密碼並考慮不要 commit 進 repo
 9. `control_device.py` 走 `mqtt` 模式目前只支援 `LOCK`/`UNLOCK`，其餘動作韌體不支援，橋接會直接丟棄
-10. `respond_invitation.py` / `generate_guest_qr.py` 發布的 `home/security/gateway_{family_id}/auth_sync` 沒有任何 subscriber，是死代碼，之後要嘛接上要嘛清掉
+10. `respond_invitation.py` 發布的 `home/security/gateway_{family_id}/auth_sync` 沒有任何 subscriber，是死代碼，之後要嘛接上要嘛清掉（`generate_guest_qr.py` 那份已隨訪客 QR 改版移除）
+15. **訪客 QR 掃碼開門已接通但沒實機跑過**（2026-10-24）：`generate_guest_qr` 改發 `guest_tokens`（不再建訪客帳號、URL 不再帶密碼），QR 指向閘道的 `GET /guest` 訪客頁 → `POST /guest_access` → `POST /control_device`（`auth_type=guest_token`），細節見 `API/generate_guest_qr/README.md`。後端邏輯用假 DB 測過；**沒在 Docker 跑過、訪客頁沒在手機瀏覽器開過**。既有 dev DB 建議補 `guest_tokens.valid_from`（WHITEPAPER 第 4 節）。對外開放要設 `GUEST_QR_BASE_URL` 並走 HTTPS。撤銷（UC3.5）後端已接上：`POST /revoke_guest_token` 掛進路由、新增 `POST /list_guest_tokens` 讓 App 查得到 token_id——同樣只做過假 DB 測試。
+    **App 端未配合（2026-10-24 決定 App 不動）**：原本一起做的 App 修改已還原，備份在 `D:\IOTA_backup_app_2026-10-24\`（`git apply` 套 patch + 複製 `guest_tokens_screen.dart`）。舊版 App 搭新 API：QR 可用（`control_url` 指向 `/guest`），但「訪客帳號／密碼」兩欄會是空的、沒有撤銷畫面；且舊 App 的 `end_time` 用不帶時區的 UTC 字串送出，API 當台灣時間解析，期限提早 8 小時，預設「4 小時後到期」會被判成已過期（HEAD 的舊 API 也一樣，不是這次造成的）
 11. **MQTT TLS 的 Arduino 端沒有在實體 ESP32 上跑過**：`WiFiClientSecure` + `syncTime()`（NTP 對時）這段完全沒真機測過，下次燒錄要注意序列埠有沒有 NTP 對時失敗或 TLS handshake 錯誤
-12. MQTT 目前只加密傳輸（TLS），`allow_anonymous true` 還在，沒有帳密驗證，之後要做的話是獨立的一個工作項
+12. **MQTT 身分驗證缺口（擋 demo）**：TLS 8883 只在 Python／CLI 端驗證過，本機開發走明碼 1883（`docker-compose.dev.yml`），CA 私鑰不在版控。broker 沒有帳密驗證，`allow_anonymous true` 還在，以下兩個洞都能讓人不經 API 直接開門：
+    - **9001 WebSocket 是後門（最優先）**：正式的 `config/mosquitto.conf` 仍開 `listener 9001`（明碼、匿名），`docker-compose.yml` 對外映射 `9001:9001`。同區網任何人連 `ws://<主機>:9001` 發 `home/device/<mac>/cmd {"action":"unlock"}` 就能開門，完全繞過 TLS、`control_device` 的權限檢查與稽核。正式環境沒有服務用 9001（只有開發觀測台 `tools/console` 用，dev 設定另有開）。修法：正式設定拿掉 9001 listener 與 port 映射，或至少改綁 `127.0.0.1:9001`
+    - **8883 也是匿名**：CA 公開憑證寫在 Arduino sketch 裡，拿到它就能連 8883 發同樣的指令。要擋得加 `password_file` + ACL（裝置只能發自己的 `state`/`event`、只能收自己的 `cmd`），API／mqtt-server／Node-RED 與 Arduino 韌體都要配帳密，韌體要重新燒錄
 13. **UC5.1 維修模式（`POST /maintenance_mode`）還沒實機測過**：Admin 權限檢查 → `devices` 欄位更新 → `control_device.py` 擋控制指令 → `api-mqtt-bridge` 背景 sweep 到期自動恢復，這一整條路徑目前只確認過程式邏輯沒有語法錯誤，沒有實際跑過 Docker Compose 驗證；也還沒有「對外開放受限的硬體診斷埠」（需要 ESP32 韌體配合）跟「依設定條件自動觸發」這兩塊
 14. **既有 dev DB 需要手動補 `devices` 新欄位**：`maintenance_mode`/`maintenance_expires_at`/`maintenance_reason` 只會在 `mysql` 容器第一次啟動時由 `schema.sql` 建立，已經跑過的環境要手動 `ALTER TABLE` 或砍掉 `./mysql-data` 重建（指令見 `API/WHITEPAPER.md` 第 4 節）
