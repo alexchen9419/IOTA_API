@@ -116,6 +116,7 @@ docker exec mqtt_server python test_ota.py        # 觸發 OTA
 |---|---|---|
 | `POST /login` | `login/login.py` | 帳號登入、回傳使用者所屬家庭清單 |
 | `POST /register` | `register/register.py` | 帳號註冊（bcrypt 雜湊密碼） |
+| `POST /change_password` | `change_password/change_password.py` | 使用者修改自己的密碼（須驗舊密碼，新密碼至少 8 字元），成功寫 `PASSWORD_CHANGED` 稽核 |
 | `POST /send_invitation` | `send_invitation/` | Admin 邀請使用者加入家庭 |
 | `POST /respond_invitation` | `respond_invitation/` | 受邀者接受/拒絕邀請 |
 | `POST /update_member_role` | `update_member_role/` | Admin 變更家庭成員角色（Admin/Member/Guest/Technician/SP/Revoked），內建自我保護（不能自我撤權） |
