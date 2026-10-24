@@ -27,6 +27,7 @@ from common.ledger_event_service import (
     iso_utc,
     resolve_gateway_id,
 )
+from common.guest_token_limits import remaining_uses as compute_remaining_uses
 
 load_dotenv()
 DB_HOST = os.getenv("DB_HOST", "localhost")
@@ -148,7 +149,7 @@ def main() -> None:
 
             device_id = str(token.get("device_id") or "") or None
             gateway_id = resolve_gateway_id(cursor, family_id=family_id, device_id=device_id)
-            remaining_uses = max(max_uses - used_count, 0) if max_uses > 0 else None
+            remaining_uses = compute_remaining_uses(max_uses, used_count)
 
             audit = append_audit_log(
                 cursor,

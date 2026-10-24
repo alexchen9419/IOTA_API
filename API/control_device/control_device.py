@@ -493,6 +493,34 @@ def verify_guest_control(cur, payload: Dict[str, Any], family_id: int, device_id
     token_plain = str(payload.get("guest_token", "")).strip()
     if not token_plain:
         raise ApiError(400, "MISSING_GUEST_TOKEN", "guest_token is required for auth_type=guest_token.")
+    token = find_valid_guest_token(cur, token_plain)
+
+    token_family = token.get("family_id")
+    if token_family is not None and int(token_family) != int(family_id):
+        raise ApiError(403, "TOKEN_FAMILY_MISMATCH", "Guest token cannot access this family.")
+
+    token_device = token.get("device_id")
+    if token_device not in (None, "", "*") and str(token_device) != str(device_id):
+        raise ApiError(403, "TOKEN_DEVICE_MISMATCH", "Guest token cannot access this device.")
+
+    allowed_set = guest_token_actions(token)
+    if allowed_set and "*" not in allowed_set and action.upper() not in allowed_set:
+        raise ApiError(403, "TOKEN_ACTION_DENIED", "Guest token cannot execute this action.")
+
+    token_id = str(token.get("token_id") or hashlib.sha256(token_plain.encode("utf-8")).hexdigest()[:16])
+    return token_id, "GUEST", token
+
+
+def guest_token_actions(token: Dict[str, Any]) -> set:
+    allowed = parse_jsonish(token.get("allowed_actions"), [])
+    if isinstance(allowed, str):
+        allowed = [allowed]
+    return {str(a).strip().upper() for a in allowed if str(a).strip()}
+
+
+def find_valid_guest_token(cur, token_plain: str) -> Dict[str, Any]:
+    """查 token 並檢查撤銷/生效/到期/次數，不扣次。control 與訪客頁
+    (guest_access.py) 共用，兩邊的判斷才不會不一致。"""
     if not table_exists(cur, "guest_tokens"):
         raise ApiError(500, "TABLE_MISSING", "guest_tokens table does not exist. Apply uc4_1_4_2_final.sql first.")
 
@@ -518,13 +546,9 @@ def verify_guest_control(cur, payload: Dict[str, Any], family_id: int, device_id
     if str(token.get("revoked", 0)).lower() in {"1", "true", "yes", "revoked"}:
         raise ApiError(403, "TOKEN_REVOKED", "Guest token has been revoked.")
 
-    token_family = token.get("family_id")
-    if token_family is not None and int(token_family) != int(family_id):
-        raise ApiError(403, "TOKEN_FAMILY_MISMATCH", "Guest token cannot access this family.")
-
-    token_device = token.get("device_id")
-    if token_device not in (None, "", "*") and str(token_device) != str(device_id):
-        raise ApiError(403, "TOKEN_DEVICE_MISMATCH", "Guest token cannot access this device.")
+    valid_from = token.get("valid_from")
+    if valid_from is not None and parse_datetime(valid_from, "valid_from") > now_utc():
+        raise ApiError(403, "TOKEN_NOT_YET_VALID", "Guest token is not valid yet.")
 
     expires_at = token.get("expires_at")
     if expires_at is None:
@@ -536,17 +560,7 @@ def verify_guest_control(cur, payload: Dict[str, Any], family_id: int, device_id
     max_uses = int(token.get("max_uses", 1) or 1)
     if used_count >= max_uses:
         raise ApiError(403, "TOKEN_USED_UP", "Guest token usage count has been exhausted.")
-
-    allowed_raw = token.get("allowed_actions")
-    allowed = parse_jsonish(allowed_raw, [])
-    if isinstance(allowed, str):
-        allowed = [allowed]
-    allowed_set = {str(a).strip().upper() for a in allowed if str(a).strip()}
-    if allowed_set and "*" not in allowed_set and action.upper() not in allowed_set:
-        raise ApiError(403, "TOKEN_ACTION_DENIED", "Guest token cannot execute this action.")
-
-    token_id = str(token.get("token_id") or token_hash[:16])
-    return token_id, "GUEST", token
+    return token
 
 
 def consume_guest_token(cur, token: Dict[str, Any]) -> None:
@@ -852,6 +866,9 @@ def handle_control(payload: Dict[str, Any]) -> Dict[str, Any]:
         raise ApiError(400, "INVALID_PARAMETERS", "parameters must be an object.")
     auth_type = normalize_auth_type(payload.get("auth_type", "user"))
     command_id = str(payload.get("command_id") or build_command_id())
+    # 寫進 audit_logs / control_commands 的請求副本不能帶明文 guest_token——
+    # audit_logs 是雜湊鏈，寫進去就刪不掉，等於把訪客通行碼永久留在 DB。
+    logged_request = {k: ("<redacted>" if k == "guest_token" else v) for k, v in payload.items()}
 
     conn = get_db_connection()
     cur = dict_cursor(conn)
@@ -909,7 +926,7 @@ def handle_control(payload: Dict[str, Any]) -> Dict[str, Any]:
                 decision="ALLOW",
                 reason=result.reason,
                 parameters=parameters,
-                raw_data={"request": payload, "command_payload": command_payload, "response_payload": result.response_payload, "target_topic": result.topic},
+                raw_data={"request": logged_request, "command_payload": command_payload, "response_payload": result.response_payload, "target_topic": result.topic},
             )
             conn.commit()
             data: Dict[str, Any] = {
@@ -943,7 +960,7 @@ def handle_control(payload: Dict[str, Any]) -> Dict[str, Any]:
             decision="DENY",
             reason=result.reason,
             parameters=parameters,
-            raw_data={"request": payload, "target_topic": result.topic},
+            raw_data={"request": logged_request, "target_topic": result.topic},
         )
         conn.commit()
         raise ApiError(502, "CONTROL_EXECUTION_FAILED", "Gateway failed to execute the control command.", result.reason)
@@ -963,7 +980,7 @@ def handle_control(payload: Dict[str, Any]) -> Dict[str, Any]:
                 control_mode=adapter.mode,
                 status="DENIED",
                 reason=f"{exc.code}: {exc.message}",
-                request_payload={"request": payload},
+                request_payload={"request": logged_request},
                 response_payload={"error": exc.code, "message": exc.message, "detail": exc.detail},
             )
             write_audit(
@@ -978,7 +995,7 @@ def handle_control(payload: Dict[str, Any]) -> Dict[str, Any]:
                 decision="DENY",
                 reason=f"{exc.code}: {exc.message}",
                 parameters=parameters,
-                raw_data={"request": payload, "detail": exc.detail},
+                raw_data={"request": logged_request, "detail": exc.detail},
             )
             conn.commit()
         except Exception:

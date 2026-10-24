@@ -126,6 +126,7 @@ CREATE TABLE IF NOT EXISTS guest_tokens (
   family_id       INT NOT NULL,
   device_id       VARCHAR(191),
   allowed_actions JSON,
+  valid_from      DATETIME NULL,
   expires_at      DATETIME NOT NULL,
   used_count      INT NOT NULL DEFAULT 0,
   max_uses        INT NOT NULL DEFAULT 1,

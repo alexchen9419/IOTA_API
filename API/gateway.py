@@ -39,6 +39,12 @@ ROUTES: dict[str, tuple[str, tuple[str, ...]]] = {
     "ota_update": ("ota_update/ota_update.py", ("POST",)),
     "maintenance_mode": ("maintenance_mode/maintenance_mode.py", ("GET", "POST")),
     "control_device": ("control_device/control_device.py", ("POST",)),
+    # UC4.2 訪客頁（GET /guest）用 token 查可開的門；開門本身走 control_device
+    "guest_access": ("control_device/guest_access.py", ("POST",)),
+    # UC3.5 撤銷訪客通行碼。revoke 早就寫好但沒掛路由；list 是新增的——
+    # App 只在產生 QR 那次拿到 token_id，沒有清單就不知道要撤銷哪一個。
+    "list_guest_tokens": ("control_device/list_guest_tokens.py", ("POST",)),
+    "revoke_guest_token": ("control_device/revoke_guest_token.py", ("POST",)),
     "device_status_update": ("control_device/device_status_update.py", ("POST",)),
     "dashboard": ("dashboard/get_family_dashboard.py", ("POST",)),
     # 輪詢專用的輕量指令狀態查詢。App 原本拿 /dashboard 輪詢，而 dashboard
@@ -95,7 +101,8 @@ app.add_middleware(
 )
 
 
-def run_cgi(script_rel_path: str, method: str, query_string: str, body: bytes) -> Response:
+def run_cgi(script_rel_path: str, method: str, query_string: str, body: bytes,
+            host: str = "", scheme: str = "http") -> Response:
     script_path = BASE_DIR / script_rel_path
     env = {
         **os.environ,
@@ -103,6 +110,9 @@ def run_cgi(script_rel_path: str, method: str, query_string: str, body: bytes) -
         "QUERY_STRING": query_string,
         "CONTENT_LENGTH": str(len(body)),
         "CONTENT_TYPE": "application/json",
+        # generate_guest_qr.py 沒設 GUEST_QR_BASE_URL 時用這個組訪客頁網址
+        "HTTP_HOST": host,
+        "REQUEST_SCHEME": scheme,
     }
 
     proc = subprocess.run(
@@ -146,7 +156,9 @@ async def dispatch(name: str, request: Request) -> Response:
         return Response(content='{"status":"Error","msg":"Method not allowed"}',
                          status_code=405, media_type="application/json")
     body = await request.body()
-    return run_cgi(script_rel_path, request.method, request.url.query, body)
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    return run_cgi(script_rel_path, request.method, request.url.query, body,
+                   host=request.headers.get("host", ""), scheme=scheme)
 
 
 for _name in ROUTES:
@@ -156,6 +168,19 @@ for _name in ROUTES:
         return handler
 
     app.add_api_route(f"/{_name}", _make_handler(_name), methods=["GET", "POST"])
+
+
+GUEST_PAGE = BASE_DIR / "guest_page" / "guest.html"
+
+
+@app.get("/guest")
+async def guest_page():
+    """訪客掃 QR 打開的頁面。token 在 URL fragment，不會出現在這個請求裡。"""
+    return Response(
+        content=GUEST_PAGE.read_bytes(),
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
 
 
 @app.get("/healthz")

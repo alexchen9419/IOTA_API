@@ -109,6 +109,12 @@
 > ```
 >
 > 或直接 `docker compose down` 後刪除 `./mysql-data` 重建（會清空既有測試資料）。
+>
+> 訪客 QR 改用 guest token 後（2026-10-24）新增 `guest_tokens.valid_from`。沒補這欄也能用，只是不能指定「未來才生效」的開始時間：
+>
+> ```sql
+> ALTER TABLE guest_tokens ADD COLUMN valid_from DATETIME NULL AFTER allowed_actions;
+> ```
 
 `control_device.py`、`device_status_update.py`、`get_family_dashboard.py` 這幾支較新的腳本對欄位名稱做了防禦性設計（`get_columns()`/`filter_by_columns()`/`select_first_by_any_column()`），可以容忍表格缺少某些欄位或用不同的候選欄位名（例如 `family_id`/`home_id`/`house_id` 皆可），因此即使 schema 之後演進也不容易整支炸掉。
 

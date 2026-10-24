@@ -1,8 +1,10 @@
 # 訪客臨時令牌撤銷 API 的規範
 
-文件依據前一版 `github%20repositories_ledger_events_completed.zip` 的同名程式。後續 `IOTA_API_guest_qr_corrected.zip` 與 `IOTA_API_alert_integrated.zip` 未包含此程式；本文件不表示已恢復部署。帳號＋QR 流程仍使用 generate_guest_qr.py / update_member_role.py。
+已掛進 `API/gateway.py`（2026-10-24）：`POST http://<host>:8091/revoke_guest_token`。`generate_guest_qr.py` 現在核發的就是 guest_tokens，所以訪客 QR 都用這支撤銷（`token_id` = 產生 QR 回應的 `authorization_id`）。
 
-新增文件，沿用原 Token 核發 README 風格。此 API 撤銷 guest_tokens，不是撤銷 QR 帳號式授權。
+App 取得 token_id 的方式：`POST /list_guest_tokens`（`control_device/list_guest_tokens.py`，`{family_id, admin_uid, include_inactive}`，僅 Admin），回傳每筆的 `token_id`、`status`（ACTIVE / PENDING / EXPIRED / USED_UP / REVOKED）、裝置、到期時間（UTC，帶 Z）、次數；不回 token_hash。App 目前尚未提供清單／撤銷畫面，需另行實作。
+
+`max_uses` 為 `2147483647`（generate_guest_qr 的「不限次數」）時，`remaining_uses` 回 null。
 
 ## 基本資訊
 
@@ -11,7 +13,7 @@
 | 實作檔案 | `IOTA_API/API/control_device/revoke_guest_token.py` |
 | 對應 UC | UC3.5 |
 | 方法 | POST / CGI stdin；未自行檢查 REQUEST_METHOD |
-| Endpoint | `/control_device/revoke_guest_token.py`（部署映射） |
+| Endpoint | `POST /revoke_guest_token`（`API/gateway.py`） |
 | Content-Type | application/json; charset=utf-8 |
 | App 互動 | 家庭現任 Admin 撤銷既有 Token |
 | ESP 互動 | 無直接控制或 auth_sync MQTT 封包 |
@@ -127,7 +129,7 @@
 正式部署請使用 HTTPS；以下為本機 CGI 路由示例，實際路由需與伺服器設定一致。
 
 ```bash
-curl -X POST "http://localhost:8000/control_device/revoke_guest_token.py" \
+curl -X POST "http://localhost:8091/revoke_guest_token" \
   -H "Content-Type: application/json" \
   -d '{"payload":{"token_id":"GT_<date>_<random>","operator_user_id":"admin001","family_id":12,"reason_code":"ADMIN_MANUAL_REVOCATION","reason":"訪客離開"}}'
 ```

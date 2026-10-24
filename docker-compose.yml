@@ -111,6 +111,8 @@ services:
       - MQTT_USE_TLS=1
       - MQTT_CA_CERT=/certs/ca.crt
       - OTA_HOST=192.168.1.3   # ESP32 直接連這個位址下載 .bin，要跟 Arduino sketch 的 MQTT_BROKER 同一台機器（見 API/ota_update）
+      # 訪客 QR 的網址（訪客手機要打得開）。留空 = 用 App 連 API 的 host，只限同區網；對外請填 HTTPS 網址
+      - GUEST_QR_BASE_URL=${GUEST_QR_BASE_URL:-}
       - PYTHONPATH=/app   # 讓各 CGI 子行程（cwd 是自己的子目錄）也 import 得到 /app/mqtt_tls.py
     ports:
       - "8091:8000"   # 家庭/裝置管理 API（見 API/gateway.py 的路由列表）

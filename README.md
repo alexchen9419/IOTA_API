@@ -119,7 +119,9 @@ docker exec mqtt_server python test_ota.py        # 觸發 OTA
 | `POST /send_invitation` | `send_invitation/` | Admin 邀請使用者加入家庭 |
 | `POST /respond_invitation` | `respond_invitation/` | 受邀者接受/拒絕邀請 |
 | `POST /update_member_role` | `update_member_role/` | Admin 變更家庭成員角色（Admin/Member/Guest/Technician/SP/Revoked），內建自我保護（不能自我撤權） |
-| `POST /generate_guest_qr` | `generate_guest_qr/` | Admin 產生訪客帳號 QR code（重用閒置訪客帳號或新建） |
+| `POST /generate_guest_qr` | `generate_guest_qr/` | Admin 核發訪客通行碼（guest_token），回傳指向 `/guest` 訪客頁的 QR 網址 |
+| `POST /list_guest_tokens`、`POST /revoke_guest_token` | `control_device/` | Admin 列出 / 撤銷訪客通行碼（UC3.5） |
+| `GET /guest`、`POST /guest_access` | `guest_page/`、`control_device/guest_access.py` | 訪客掃碼後的開門頁面與其查詢端點（開門本身走 `control_device`） |
 | `POST /device_pair` | `device_pair/`（UC2.1） | 裝置首次安全配對：ECDH 金鑰交換 + HKDF 產生 session key，只存 hash |
 | `GET`\|`POST /list_devices` | `list_devices/`（UC2.1） | 查詢已配對裝置清單與最近上鏈（audit_logs）紀錄 |
 | `POST /decommission_device` | `decommission_device/`（UC2.3） | 裝置除役/解綁：`status=Revoked`、清空 session_key_hash |
@@ -146,7 +148,7 @@ docker exec mqtt_server python test_ota.py        # 觸發 OTA
 **已知缺口**：
 
 - 沒有任何 endpoint 可以「建立家庭」（`families` 表）——要測試得手動 `INSERT INTO families`
-- `respond_invitation.py` / `generate_guest_qr.py` 另外會發布到 `home/security/gateway_{family_id}/auth_sync`，這條路徑沒有任何 subscriber、跟裝置控制無關，維持原樣未動
+- `respond_invitation.py` 另外會發布到 `home/security/gateway_{family_id}/auth_sync`，這條路徑沒有任何 subscriber、跟裝置控制無關，維持原樣未動
 - `control_device.py` 走 `mqtt` 模式時目前只有 `LOCK`/`UNLOCK` 會真的送到裝置，其餘動作（ON/OFF/OPEN/CLOSE/TOGGLE/START/STOP）韌體不支援，橋接會丟棄並記 log
 
 **環境變數**：`api` / `api-mqtt-bridge` 兩個服務在 `docker-compose.yml` 裡已經設好 `DB_HOST`/`DB_USER`/`DB_PASS`/`DB_PASSWORD`/`DB_NAME`/`MQTT_HOST`/`MQTT_PORT`/`MQTT_USE_TLS`/`MQTT_CA_CERT`/`CONTROL_MODE`（兩種 DB 密碼變數名都設，因為不同腳本讀的變數名不完全一致）；`api` 服務另外設了 `OTA_HOST`（`/ota_update` 組韌體下載網址用，必須是 ESP32 能直接連到的區網 IP，跟 Arduino sketch 的 `MQTT_BROKER`、`mqtt-server/test_ota.py` 的 `OTA_HOST` 要是同一台機器）。

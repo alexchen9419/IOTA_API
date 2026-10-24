@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>訪客開門</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Noto Sans TC", sans-serif; margin: 0;
+         background: #0f172a; color: #e2e8f0; }
+  main { max-width: 420px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .meta { color: #94a3b8; font-size: 14px; margin-bottom: 20px; line-height: 1.6; }
+  .door { background: #1e293b; border: 1px solid #334155; border-radius: 14px;
+          padding: 16px; margin-bottom: 12px; }
+  .door h2 { font-size: 17px; margin: 0 0 12px; }
+  button { width: 100%; padding: 16px; font-size: 18px; font-weight: bold; border: 0;
+           border-radius: 10px; background: #6366f1; color: #fff; }
+  button:disabled { background: #475569; }
+  .msg { margin-top: 10px; font-size: 14px; min-height: 1em; }
+  .ok { color: #4ade80; } .err { color: #f87171; }
+</style>
+</head>
+<body>
+<main>
+  <h1>訪客開門</h1>
+  <div class="meta" id="meta">讀取通行碼中…</div>
+  <div id="doors"></div>
+</main>
+<script>
+(function () {
+  // token 在 URL fragment（#t=...），fragment 不會送到伺服器。讀出來後
+  // 從網址列移掉、改存 sessionStorage，避免被截圖或留在瀏覽紀錄裡；重新整理仍可用。
+  var KEY = "guest_token";
+  var m = location.hash.match(/[#&]t=([^&]+)/);
+  if (m) {
+    sessionStorage.setItem(KEY, decodeURIComponent(m[1]));
+    history.replaceState(null, "", location.pathname);
+  }
+  var token = sessionStorage.getItem(KEY);
+  var meta = document.getElementById("meta");
+  var doors = document.getElementById("doors");
+
+  var ERRORS = {
+    TOKEN_NOT_FOUND: "通行碼無效",
+    TOKEN_REVOKED: "通行碼已被屋主撤銷",
+    TOKEN_EXPIRED: "通行碼已過期",
+    TOKEN_NOT_YET_VALID: "通行碼尚未生效",
+    TOKEN_USED_UP: "通行碼使用次數已用完",
+    TOKEN_ACTION_DENIED: "此通行碼不能執行這個動作",
+    TOKEN_DEVICE_MISMATCH: "此通行碼不能開這扇門",
+    DEVICE_IN_MAINTENANCE: "門鎖維修中，暫時無法開啟",
+    DEVICE_NOT_ACTIVE: "門鎖目前停用",
+    CONTROL_EXECUTION_FAILED: "門鎖沒有回應，請稍後再試"
+  };
+
+  function post(path, body) {
+    return fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      referrerPolicy: "no-referrer"
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, body: j }; });
+    });
+  }
+  function errText(body) {
+    return ERRORS[body && body.code] || (body && (body.message || body.msg)) || "發生錯誤";
+  }
+  function showMeta(d) {
+    var exp = new Date(d.expires_at);
+    var uses = d.remaining_uses === null ? "不限" : d.remaining_uses + " 次";
+    meta.textContent = "有效至 " + exp.toLocaleString() + "　剩餘 " + uses;
+  }
+
+  if (!token) { meta.innerHTML = '<span class="err">找不到通行碼，請重新掃描 QR Code</span>'; return; }
+
+  post("guest_access", { guest_token: token }).then(function (res) {
+    if (!res.ok) { meta.innerHTML = ""; meta.appendChild(span("err", errText(res.body))); return; }
+    var d = res.body.data;
+    showMeta(d);
+    if (!d.devices.length) { doors.appendChild(span("err", "沒有可開啟的門鎖")); return; }
+    d.devices.forEach(function (dev) {
+      var box = document.createElement("div"); box.className = "door";
+      var h = document.createElement("h2"); h.textContent = dev.device_name;
+      var btn = document.createElement("button"); btn.textContent = "開門";
+      var msg = document.createElement("div"); msg.className = "msg";
+      btn.onclick = function () {
+        btn.disabled = true; msg.className = "msg"; msg.textContent = "傳送中…";
+        post("control_device", {
+          auth_type: "guest_token", guest_token: token,
+          family_id: d.family_id, device_id: dev.device_id, action: "UNLOCK"
+        }).then(function (r) {
+          if (r.ok) {
+            msg.className = "msg ok"; msg.textContent = "已送出開門指令";
+            var u = r.body.data && r.body.data.guest_token_usage;
+            if (u && d.remaining_uses !== null) { d.remaining_uses = Math.max(u.max_uses - u.used_count_after, 0); showMeta(d); }
+          } else {
+            msg.className = "msg err"; msg.textContent = errText(r.body);
+          }
+          btn.disabled = d.remaining_uses === 0;
+        }, function () { msg.className = "msg err"; msg.textContent = "連線失敗"; btn.disabled = false; });
+      };
+      box.appendChild(h); box.appendChild(btn); box.appendChild(msg);
+      doors.appendChild(box);
+    });
+  }, function () { meta.innerHTML = ""; meta.appendChild(span("err", "連線失敗")); });
+
+  function span(cls, text) { var s = document.createElement("span"); s.className = cls; s.textContent = text; return s; }
+})();
+</script>
+</body>
+</html>
