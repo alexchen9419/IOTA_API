@@ -30,6 +30,7 @@ Run as its own long-lived process (see docker-compose service api-mqtt-bridge).
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import os
@@ -299,7 +300,50 @@ def handle_device_state(topic: str, payload: Dict[str, Any]) -> None:
         print(f"[bridge] device_status_update failed for {device_id}: {exc}", file=sys.stderr)
 
 
-def handle_device_event(topic: str, payload: Dict[str, Any]) -> None:
+# 裝置事件 -> alert_service 警報（home/security/gateway_{family_id}/alert）。
+# anomaly_type 只有防拆給：它在 UC4.4 白名單裡，會進 security_events/ledger；
+# 門鈴、保險箱警報不是安全異常，不帶 anomaly_type，alert_service 只推播不記錄。
+EVENT_ALERTS = {
+    "doorbell": {"severity": "LOW", "msg": "🔔 有人按門鈴"},
+    "tamper_detected": {"severity": "CRITICAL", "msg": "⚠️ 防拆警報", "anomaly_type": "DEVICE_TAMPERING"},
+    "alarm_triggered": {"severity": "HIGH", "msg": "🚨 保險箱警報響起"},
+}
+# 同一裝置同一種事件在冷卻時間內只推一次。之前 S3 觸控暖機的 bug 一次灌了 600 多筆
+# 假事件，沒有這道閘門就是 600 多則 Telegram。audit_logs 照寫，只擋推播。
+ALERT_COOLDOWN_SEC = float(os.getenv("ALERT_COOLDOWN_SEC", "30"))
+LAST_ALERT_AT: Dict[tuple, float] = {}
+
+
+def publish_event_alert(client: mqtt.Client, device_id: str, family_id: int, event_type: str) -> None:
+    spec = EVENT_ALERTS.get(event_type)
+    if not spec:
+        return
+    now = time.monotonic()
+    key = (device_id, event_type)
+    last = LAST_ALERT_AT.get(key)
+    if last is not None and now - last < ALERT_COOLDOWN_SEC:
+        print(f"[bridge] {device_id} {event_type}: 冷卻中，不重複推播")
+        return
+    LAST_ALERT_AT[key] = now
+    ts_ms = int(time.time() * 1000)
+    alert = {
+        # 每次事件一個新 request_id：同一裝置隔一陣子再被拆，是另一筆異常
+        "request_id": f"EVT_{ts_ms}_{device_id}",
+        "device_id": device_id,
+        "family_id": family_id,
+        "event_type": event_type,
+        "severity": spec["severity"],
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        "msg": spec["msg"],
+    }
+    if "anomaly_type" in spec:
+        alert["anomaly_type"] = spec["anomaly_type"]
+    alert_topic = f"home/security/gateway_{family_id}/alert"
+    client.publish(alert_topic, json.dumps(alert, ensure_ascii=False), qos=1)
+    print(f"[bridge] {device_id} {event_type} -> {alert_topic}")
+
+
+def handle_device_event(client: mqtt.Client, topic: str, payload: Dict[str, Any]) -> None:
     # home/device/<mac>/event  (doorbell / tamper_detected)
     p = topic_parts(topic)
     if len(p) != 4 or p[1] != "device" or p[3] != "event":
@@ -309,6 +353,10 @@ def handle_device_event(topic: str, payload: Dict[str, Any]) -> None:
     event_type = payload.get("type", "unknown")
     write_event_audit(device_id, family_id, event_type)
     print(f"[bridge] {topic} event={event_type} -> audit_logs (family_id={family_id})")
+    if family_id is None:
+        print(f"[bridge] {device_id}: not paired, no alert")
+        return
+    publish_event_alert(client, device_id, family_id, event_type)
 
 
 def main() -> None:
@@ -341,7 +389,7 @@ def main() -> None:
             elif len(p) == 4 and p[1] == "device" and p[3] == "state":
                 handle_device_state(msg.topic, payload)
             elif len(p) == 4 and p[1] == "device" and p[3] == "event":
-                handle_device_event(msg.topic, payload)
+                handle_device_event(client, msg.topic, payload)
         except Exception as exc:
             print(f"[bridge] error handling {msg.topic}: {exc}", file=sys.stderr)
 

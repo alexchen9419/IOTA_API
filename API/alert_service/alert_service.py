@@ -7,6 +7,7 @@ import paho.mqtt.client as mqtt
 import os
 import re
 import sys
+import threading
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -14,6 +15,8 @@ API_ROOT = Path(__file__).resolve().parents[1]
 if str(API_ROOT) not in sys.path:
     sys.path.insert(0, str(API_ROOT))
 from common.security_anomaly_service import record_security_anomaly
+from common.push_notify import push_configured, send_push
+import mqtt_tls
 
 # 載入雲端環境變數
 load_dotenv()
@@ -48,6 +51,19 @@ def get_authorized_users(family_id):
         conn.close()
         
     return authorized_users
+
+def dispatch_external_push(family_id, payload):
+    severity = str(payload.get('severity') or 'HIGH').upper()
+    title = f"[家庭 {family_id}] {payload.get('msg') or '安全警報'}"
+    lines = [f"裝置：{payload.get('device_id') or '未知'}"]
+    if payload.get('timestamp'):
+        lines.append(f"時間：{payload['timestamp']}")
+    lines.append(f"等級：{severity}")
+    errors = send_push(title, "\n".join(lines), severity)
+    if errors:
+        print(f"[外部推播失敗] 家庭 {family_id}: {'; '.join(errors)}")
+    else:
+        print(f"[外部推播] 家庭 {family_id} 已送出")
 
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
@@ -109,7 +125,13 @@ def on_message(client, userdata, msg):
                         print("[資料庫錯誤] 異常紀錄連線關閉失敗；繼續嘗試通知。")
         else:
             print("[略過異常紀錄] 缺少 request_id 或 anomaly_type；保留原有通知流程。")
-        
+
+        # 外部推播（Telegram / ntfy）。放背景執行緒，HTTP 逾時不會卡住 MQTT 網路迴圈；
+        # 放在查收件人之前，資料庫掛掉也照樣推得出去。
+        if push_configured():
+            threading.Thread(target=dispatch_external_push, args=(family_id, payload),
+                             daemon=True).start()
+
         # 查詢具備權限的成員
         users = get_authorized_users(family_id)
         
@@ -140,10 +162,14 @@ if __name__ == "__main__":
     client = mqtt.Client()
     client.on_connect = on_connect
     client.on_message = on_message
+    # broker 只開 TLS 8883，跟其他 API 服務共用 mqtt_tls 設定
+    mqtt_tls.apply_tls(client)
+    port = mqtt_tls.broker_port()
 
-    print(f"正在啟動警報路由服務，連接至 {MQTT_HOST}...")
+    print(f"正在啟動警報路由服務，連接至 {MQTT_HOST}:{port}...")
+    print(f"[外部推播] {'已啟用' if push_configured() else '未設定 TELEGRAM_* / NTFY_TOPIC，只走 MQTT'}")
     try:
-        client.connect(MQTT_HOST, 1883, 60)
+        client.connect(MQTT_HOST, port, 60)
         client.loop_forever()
     except Exception as e:
         print(f"無法連線: {e}")

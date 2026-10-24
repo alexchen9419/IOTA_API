@@ -1,6 +1,31 @@
 # MQTT 警報服務與 UC4.4 串接
 
-啟動：`python3 alert_service/alert_service.py`。保留原 DB/MQTT 環境變數、預設值、Broker port 1883 與原連線方式。
+啟動：docker-compose 的 `alert-service` 服務（`python -u alert_service/alert_service.py`）。Broker 連線改走共用的 `mqtt_tls`（`MQTT_PORT`／`MQTT_USE_TLS`／`MQTT_CA_CERT`，預設 TLS 8883），其餘 DB/MQTT 環境變數與預設值不變。
+
+## 門鈴／防拆事件來源
+
+`api-mqtt-bridge`（`control_device/mqtt_topic_bridge.py`）收到 `home/device/<mac>/event` 後，若裝置已配對就發到 `home/security/gateway_<family_id>/alert`：
+
+| 事件 | severity | anomaly_type | 結果 |
+|---|---|---|---|
+| `doorbell` | LOW | 無 | 只推播 |
+| `tamper_detected` | CRITICAL | `DEVICE_TAMPERING` | 記錄 UC4.4 異常 + 推播 |
+| `alarm_triggered`（保險箱） | HIGH | 無 | 只推播 |
+
+同一裝置同一事件 `ALERT_COOLDOWN_SEC`（預設 30 秒）內只轉發一次，audit_logs 照寫。
+
+## 外部推播（Telegram / ntfy）
+
+`common/push_notify.py`，用環境變數開關（docker compose 從 repo 根目錄 `.env` 讀，已加進 `.gitignore`）：
+
+```
+TELEGRAM_BOT_TOKEN=123456:ABC...
+TELEGRAM_CHAT_ID=987654321
+NTFY_TOPIC=my-home-alerts-xxxx      # 公開 ntfy.sh 的 topic 誰猜到都能訂閱，取長一點
+# NTFY_URL=https://ntfy.example.com  NTFY_TOKEN=tk_...（自架/私有 topic）
+```
+
+都沒設就只走 MQTT。推播在背景執行緒送出，不阻塞 MQTT 迴圈；失敗只印 log、不重試。目前是整個系統一個目的地，不分家庭／使用者。
 訂閱修正為 `home/security/+/alert`，QoS 1；MQTT 的 `+` 必須佔完整一層。
 收到訊息後只接受 `home/security/gateway_<家庭整數ID>/alert`。
 

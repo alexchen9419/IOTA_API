@@ -152,6 +152,40 @@ services:
     networks:
       - mqtt-net
 
+  # 警報路由：訂閱 home/security/+/alert（api-mqtt-bridge 把門鈴/防拆事件轉發到這裡），
+  # 記錄 UC4.4 異常、推給家庭成員的 app/user/<id>/notifications，再推 Telegram / ntfy。
+  # 推播金鑰從主機環境變數或 repo 根目錄的 .env 帶入（不要 commit），沒設就只走 MQTT。
+  alert-service:
+    build: ./API
+    container_name: iot_alert_service
+    restart: always
+    command: ["python", "-u", "alert_service/alert_service.py"]
+    environment:
+      - DB_HOST=mysql
+      - DB_USER=apiuser
+      - DB_PASS=devpass123
+      - DB_NAME=devicemanagement
+      - MQTT_HOST=mqtt-broker
+      - MQTT_PORT=8883
+      - MQTT_USE_TLS=1
+      - MQTT_CA_CERT=/certs/ca.crt
+      - PYTHONPATH=/app
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - NTFY_URL=${NTFY_URL:-https://ntfy.sh}
+      - NTFY_TOPIC=${NTFY_TOPIC:-}
+      - NTFY_TOKEN=${NTFY_TOKEN:-}
+    volumes:
+      - ./API:/app
+      - ./config/certs:/certs:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mqtt-broker:
+        condition: service_started
+    networks:
+      - mqtt-net
+
 networks:
   mqtt-net:
     driver: bridge

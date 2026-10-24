@@ -14,10 +14,10 @@ def on_event(mac, payload):
     event_type = payload.get("type")
     if event_type == "tamper_detected":
         print(f"[STRONGBOX {mac}] ⚠️  防拆警報！")
-        # TODO: 緊急警報
+        # 推播在 API 端做：api-mqtt-bridge → home/security/gateway_<family>/alert → alert-service
     elif event_type == "alarm_triggered":
         print(f"[STRONGBOX {mac}] 🚨 警報響起！")
-        # TODO: 推播通知
+        # 同上
 
 
 def send_unlock(client, mac):

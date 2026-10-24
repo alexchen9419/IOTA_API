@@ -16,4 +16,9 @@ mqtt-server/ota_keys/ota_signing_key.pem
 config/certs/ca.key
 config/certs/server.key
 .ledger.env
+# docker compose 自動讀的 .env（放 TELEGRAM_BOT_TOKEN / NTFY_TOPIC 等推播金鑰）
+/.env
 ledger-backup-*/
+
+# Claude Code 個人設定
+**/.claude/settings.local.json

@@ -10,10 +10,10 @@ def on_event(mac, payload):
     event_type = payload.get("type")
     if event_type == "doorbell":
         print(f"[LOCK {mac}] 🔔 有人按門鈴")
-        # TODO: 推播通知（Telegram / ntfy）
+        # 推播在 API 端做：api-mqtt-bridge → home/security/gateway_<family>/alert → alert-service
     elif event_type == "tamper_detected":
         print(f"[LOCK {mac}] ⚠️  防拆警報！")
-        # TODO: 緊急警報
+        # 同上，alert-service 會另外記 UC4.4 異常（DEVICE_TAMPERING）
 
 
 def send_unlock(client, mac):
