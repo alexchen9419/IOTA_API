@@ -7,7 +7,7 @@ services:
     restart: always
     ports:
       - "8883:8883"   # MQTT over TLS（明碼 1883 已關閉）
-      - "9001:9001"   # WebSocket 連接埠 (選配，仍是明碼，見 mosquitto.conf 註記)
+      # 9001 WebSocket 已於 2026-10-24 移除：明文＋匿名，可繞過 API 直接 unlock
     volumes:
       - ./config:/mosquitto/config
       - ./config/certs:/mosquitto/certs:ro
