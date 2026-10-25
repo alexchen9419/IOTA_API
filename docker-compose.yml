@@ -24,6 +24,8 @@ services:
       - MQTT_PORT=8883
       - MQTT_USE_TLS=1
       - MQTT_CA_CERT=/certs/ca.crt
+      - MQTT_USERNAME=server
+      - MQTT_PASSWORD=${MQTT_SERVER_PASSWORD:?Run config/gen_mqtt_users.ps1}
     ports:
       - "8080:8080"   # OTA 韌體檔案下載（/firmware/<file>.bin）
     volumes:
@@ -47,6 +49,8 @@ services:
       - MQTT_PORT=8883
       - MQTT_USE_TLS=1
       - MQTT_CA_CERT=/certs/ca.crt
+      - MQTT_USERNAME=server
+      - MQTT_PASSWORD=${MQTT_SERVER_PASSWORD:?Run config/gen_mqtt_users.ps1}
     ports:
       - "8090:8090"   # 網頁監控頁面
     volumes:
@@ -65,10 +69,11 @@ services:
       - "127.0.0.1:1880:1880"   # Node-RED 編輯器：只綁本機（區網其他裝置不需要連它；要遠端用 SSH 轉發）
     volumes:
       - ./node-red-data:/data
+      - ./config/certs:/certs:ro
     environment:
       - TZ=Asia/Taipei
       # 編輯器登入密碼（settings.js 的 adminAuth 讀這個；帳號 admin）
-      - NODE_RED_ADMIN_PASSWORD=${NODE_RED_ADMIN_PASSWORD:?Set NODE_RED_ADMIN_PASSWORD in .env (>= 16 chars)}
+      - NODE_RED_ADMIN_PASSWORD=${NODE_RED_ADMIN_PASSWORD:?Run config/gen_mqtt_users.ps1}
     depends_on:
       - mqtt-broker
     networks:
@@ -105,6 +110,8 @@ services:
       - DB_PASSWORD=${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
       - DB_NAME=devicemanagement
       - CONTROL_MODE=mqtt
+      - MQTT_USERNAME=server
+      - MQTT_PASSWORD=${MQTT_SERVER_PASSWORD:?Run config/gen_mqtt_users.ps1}
       # 瀏覽器 CORS 來源白名單（逗號分隔，例如 https://app.example.com）。localhost / 127.0.0.1 任意 port 預設允許（Flutter Web 開發用）
       - CORS_ORIGINS=${CORS_ORIGINS:-}
       # /report_security_anomaly 的服務金鑰（呼叫端要帶 X-Service-Token）；>= 32 字元
@@ -113,7 +120,7 @@ services:
       - MQTT_PORT=8883
       - MQTT_USE_TLS=1
       - MQTT_CA_CERT=/certs/ca.crt
-      - OTA_HOST=192.168.1.3   # ESP32 直接連這個位址下載 .bin，要跟 Arduino sketch 的 MQTT_BROKER 同一台機器（見 API/ota_update）
+      - OTA_HOST=192.168.0.84  # ESP32 直接連這個位址下載 .bin，要跟 Arduino sketch 的 MQTT_BROKER 同一台機器（見 API/ota_update）
       # 訪客 QR 的網址（訪客手機要打得開）。留空 = 用 App 連 API 的 host，只限同區網；對外請填 HTTPS 網址
       - GUEST_QR_BASE_URL=${GUEST_QR_BASE_URL:-}
       - PYTHONPATH=/app   # 讓各 CGI 子行程（cwd 是自己的子目錄）也 import 得到 /app/mqtt_tls.py
@@ -150,6 +157,8 @@ services:
       - MQTT_USE_TLS=1
       - MQTT_CA_CERT=/certs/ca.crt
       - PYTHONPATH=/app
+      - MQTT_USERNAME=server
+      - MQTT_PASSWORD=${MQTT_SERVER_PASSWORD:?Run config/gen_mqtt_users.ps1}
     volumes:
       - ./API:/app
       - ./config/certs:/certs:ro
@@ -184,6 +193,8 @@ services:
       - NTFY_URL=${NTFY_URL:-https://ntfy.sh}
       - NTFY_TOPIC=${NTFY_TOPIC:-}
       - NTFY_TOKEN=${NTFY_TOKEN:-}
+      - MQTT_USERNAME=server
+      - MQTT_PASSWORD=${MQTT_SERVER_PASSWORD:?Run config/gen_mqtt_users.ps1}
     volumes:
       - ./API:/app
       - ./config/certs:/certs:ro

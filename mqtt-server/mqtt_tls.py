@@ -7,7 +7,15 @@ config/certs/ca.crt；本機（非容器）跑的話可以留空，`tls_set()` �
 import os
 
 
+def apply_auth(client) -> None:
+    """broker 已關閉匿名；帳密從 MQTT_USERNAME / MQTT_PASSWORD 帶入。"""
+    username = os.getenv("MQTT_USERNAME")
+    if username:
+        client.username_pw_set(username, os.getenv("MQTT_PASSWORD"))
+
+
 def apply_tls(client) -> None:
+    apply_auth(client)
     if os.getenv("MQTT_USE_TLS", "1") != "1":
         return
     ca_cert = os.getenv("MQTT_CA_CERT")

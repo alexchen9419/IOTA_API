@@ -45,6 +45,9 @@ doorbell 事件會被擋下來，跟真機一樣。
 
 ## 用法
 
+    # broker 不收匿名，先帶裝置帳密（密碼 = .env 的 MQTT_DEVICE_PASSWORD）：
+    #   $env:MQTT_USERNAME='device'; $env:MQTT_PASSWORD='<MQTT_DEVICE_PASSWORD>'
+
     # 常駐模擬一台裝置
     python fake_device.py <MAC> --broker 192.168.50.234
 
@@ -70,6 +73,8 @@ from pathlib import Path
 import paho.mqtt.client as mqtt
 import yaml
 from paho.mqtt.enums import CallbackAPIVersion
+
+import mqtt_tls
 
 HERE = Path(__file__).resolve().parent
 MODELS_FILE = HERE / "models.yaml"
@@ -112,6 +117,7 @@ class FakeDevice:
         self.registered = False          # 韌體的 registered 旗標
         self._lock = threading.Lock()
         self.client = mqtt.Client(CallbackAPIVersion.VERSION2, client_id=f"esp32-{mac}")
+        mqtt_tls.apply_auth(self.client)   # broker 不收匿名：MQTT_USERNAME / MQTT_PASSWORD
         self.client.on_connect = self._on_connect
         self.client.on_message = self._on_message
 
@@ -343,6 +349,7 @@ def main() -> int:
         if not dev.has(need):
             sys.exit(f"{args.model} 的 features 沒有 {need}，送不出 {args.event}")
         c = mqtt.Client(CallbackAPIVersion.VERSION2, client_id=f"esp32-evt-{args.mac}")
+        mqtt_tls.apply_auth(c)
         c.connect(args.broker, args.port, keepalive=10)
         c.loop_start()
         payload = json.dumps({"type": args.event})

@@ -1,0 +1,27 @@
+# Mosquitto ACL —— 依角色最小權限。帳號與密碼見 config/passwd（不進版控），
+# 產生方式見 config/README_mqtt_auth.md。
+# 沒有列在這裡的帳號、topic 一律拒絕（allow_anonymous false 之下沒有預設權限）。
+
+# 伺服器端程式：API、api-mqtt-bridge、alert-service、mqtt-server、mqtt-monitor
+user server
+topic readwrite home/#
+topic readwrite app/#
+
+# Node-RED：讀裝置狀態/事件/註冊，只能對裝置下 cmd
+user nodered
+topic read home/register
+topic read home/device/+/state
+topic read home/device/+/event
+topic write home/device/+/cmd
+
+# 裝置（ESP32 韌體、fake_device.py）：只能回報，收自己的 config/cmd/ota。
+# 裝置不能寫 cmd，所以偷到裝置帳號也沒辦法對別的鎖下 unlock。
+# TODO：目前所有裝置共用一組帳號；要做到「一台一組」需要註冊流程發帳號，
+#       之後可改成 `pattern` + %u（帳號 = MAC）。
+user device
+topic write home/register
+topic write home/device/+/state
+topic write home/device/+/event
+topic read home/device/+/config
+topic read home/device/+/cmd
+topic read home/device/+/ota

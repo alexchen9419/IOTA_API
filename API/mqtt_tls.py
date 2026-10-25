@@ -9,7 +9,15 @@ config/certs/ca.crt（docker-compose 已設好 PYTHONPATH=/app，讓 CGI 子行�
 import os
 
 
+def apply_auth(client) -> None:
+    """broker 已關閉匿名；帳密從 MQTT_USERNAME / MQTT_PASSWORD 帶入。"""
+    username = os.getenv("MQTT_USERNAME")
+    if username:
+        client.username_pw_set(username, os.getenv("MQTT_PASSWORD"))
+
+
 def apply_tls(client) -> None:
+    apply_auth(client)
     if os.getenv("MQTT_USE_TLS", "1") != "1":
         return
     ca_cert = os.getenv("MQTT_CA_CERT")
@@ -24,8 +32,13 @@ def broker_port() -> int:
 
 
 def publish_tls_kwargs() -> dict:
-    """給 paho.mqtt.publish.single()/multiple() 用的 tls= 參數。"""
+    """給 paho.mqtt.publish.single()/multiple() 用的 tls= / auth= 參數。"""
+    kwargs = {}
+    username = os.getenv("MQTT_USERNAME")
+    if username:
+        kwargs["auth"] = {"username": username, "password": os.getenv("MQTT_PASSWORD")}
     if os.getenv("MQTT_USE_TLS", "1") != "1":
-        return {}
+        return kwargs
     ca_cert = os.getenv("MQTT_CA_CERT")
-    return {"tls": {"ca_certs": ca_cert}} if ca_cert else {"tls": {}}
+    kwargs["tls"] = {"ca_certs": ca_cert} if ca_cert else {}
+    return kwargs

@@ -7,14 +7,26 @@
         "info": "Monitor and control IoT devices via MQTT"
     },
     {
+        "id": "tls-mqtt-ca",
+        "type": "tls-config",
+        "name": "Mosquitto CA",
+        "certType": "files",
+        "ca": "/certs/ca.crt",
+        "cert": "",
+        "key": "",
+        "verifyservercert": true,
+        "alpnprotocol": ""
+    },
+    {
         "id": "mqtt-broker-config",
         "type": "mqtt-broker",
-        "name": "Mosquitto (local)",
+        "name": "Mosquitto (TLS)",
         "broker": "mqtt-broker",
-        "port": "1883",
+        "port": "8883",
+        "tls": "tls-mqtt-ca",
         "clientid": "node-red-client",
         "autoConnect": true,
-        "usetls": false,
+        "usetls": true,
         "protocolVersion": "4",
         "keepalive": "60",
         "cleansession": true,
@@ -47,7 +59,12 @@
         "inputs": 0,
         "x": 120,
         "y": 100,
-        "wires": [["node-debug-state", "node-func-state"]]
+        "wires": [
+            [
+                "node-debug-state",
+                "node-func-state"
+            ]
+        ]
     },
     {
         "id": "node-mqtt-in-event",
@@ -64,7 +81,11 @@
         "inputs": 0,
         "x": 120,
         "y": 200,
-        "wires": [["node-debug-event"]]
+        "wires": [
+            [
+                "node-debug-event"
+            ]
+        ]
     },
     {
         "id": "node-mqtt-in-register",
@@ -81,7 +102,11 @@
         "inputs": 0,
         "x": 120,
         "y": 300,
-        "wires": [["node-debug-register"]]
+        "wires": [
+            [
+                "node-debug-register"
+            ]
+        ]
     },
     {
         "id": "node-debug-state",
@@ -113,7 +138,11 @@
         "libs": [],
         "x": 400,
         "y": 120,
-        "wires": [["node-change-state"]]
+        "wires": [
+            [
+                "node-change-state"
+            ]
+        ]
     },
     {
         "id": "node-change-state",
@@ -136,7 +165,9 @@
         "reg": false,
         "x": 620,
         "y": 120,
-        "wires": [[]]
+        "wires": [
+            []
+        ]
     },
     {
         "id": "node-debug-event",
@@ -178,8 +209,13 @@
         "z": "tab-iot-dashboard",
         "name": "send command",
         "props": [
-            {"p": "payload"},
-            {"p": "topic", "vt": "str"}
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
         ],
         "repeat": "",
         "crontab": "",
@@ -190,7 +226,11 @@
         "payloadType": "json",
         "x": 120,
         "y": 420,
-        "wires": [["node-mqtt-out-cmd"]]
+        "wires": [
+            [
+                "node-mqtt-out-cmd"
+            ]
+        ]
     },
     {
         "id": "node-mqtt-out-cmd",

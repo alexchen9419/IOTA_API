@@ -12,6 +12,8 @@ mqtt-server/firmware/*.bin
 mqtt-server/firmware/*.sig
 # OTA 簽章私鑰，絕對不要進版控；公鑰(ota_public_key.h)沒關係，可以進版控
 mqtt-server/ota_keys/ota_signing_key.pem
+# MQTT 帳號密碼檔（雜湊後的 passwd），不進版控；acl 沒有密碼，可以進版控
+config/passwd
 # MQTT TLS 私鑰，絕對不要進版控；ca.crt/server.crt 是公開憑證，可以進版控
 config/certs/ca.key
 config/certs/server.key
