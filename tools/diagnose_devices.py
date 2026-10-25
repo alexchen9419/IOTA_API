@@ -39,7 +39,9 @@ DEVICES_JSON = ROOT / "mqtt-server" / "devices.json"
 
 # 容器名稱與密碼取自 docker-compose.yml，可用環境變數覆蓋。
 MYSQL_CONTAINER = os.getenv("MYSQL_CONTAINER", "iot_mysql")
-MYSQL_ROOT_PW = os.getenv("MYSQL_ROOT_PASSWORD", "devroot123")
+MYSQL_ROOT_PW = os.getenv("MYSQL_ROOT_PASSWORD")
+if not MYSQL_ROOT_PW:
+    raise SystemExit("請先設定環境變數 MYSQL_ROOT_PASSWORD（同 .env 裡的值）")
 MYSQL_DB = os.getenv("DB_NAME", "devicemanagement")
 
 RETIRED = {"revoked", "retired", "decommissioned"}

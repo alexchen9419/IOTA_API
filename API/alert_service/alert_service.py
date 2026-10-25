@@ -22,8 +22,8 @@ import mqtt_tls
 load_dotenv()
 DB_HOST = os.getenv('DB_HOST', 'localhost')
 DB_USER = os.getenv('DB_USER', 'vboxuser')
-DB_PASS = os.getenv('DB_PASS', '82451258')
-DB_NAME = os.getenv('DB_NAME', 'database02')
+DB_PASS = os.getenv('DB_PASS')
+DB_NAME = os.getenv('DB_NAME', 'devicemanagement')
 MQTT_HOST = os.getenv('MQTT_HOST', '192.168.0.84')
 
 def get_authorized_users(family_id):
