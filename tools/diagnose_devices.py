@@ -37,9 +37,8 @@ sys.stdout.reconfigure(errors="replace")
 ROOT = Path(__file__).resolve().parent.parent
 DEVICES_JSON = ROOT / "mqtt-server" / "devices.json"
 
-# 容器名稱與密碼取自 docker-compose.yml，可用環境變數覆蓋。
+# 使用容器內既有環境變數；不在主機命令列放密碼。
 MYSQL_CONTAINER = os.getenv("MYSQL_CONTAINER", "iot_mysql")
-MYSQL_ROOT_PW = os.getenv("MYSQL_ROOT_PASSWORD", "devroot123")
 MYSQL_DB = os.getenv("DB_NAME", "devicemanagement")
 
 RETIRED = {"revoked", "retired", "decommissioned"}
@@ -48,8 +47,9 @@ RETIRED = {"revoked", "retired", "decommissioned"}
 def sql(query: str):
     """跑一段 SQL，回傳 list[list[str]]。用 docker exec，不需要本機裝 mysql client。"""
     proc = subprocess.run(
-        ["docker", "exec", MYSQL_CONTAINER, "mysql",
-         f"-uroot", f"-p{MYSQL_ROOT_PW}", MYSQL_DB, "-N", "-B", "-e", query],
+        ["docker", "exec", MYSQL_CONTAINER, "sh", "-c",
+         'export MYSQL_PWD="$MYSQL_PASSWORD"; exec mysql -u"$MYSQL_USER" "$@"',
+         "mysql", MYSQL_DB, "-N", "-B", "-e", query],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if proc.returncode != 0:

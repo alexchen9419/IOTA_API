@@ -1,4 +1,3 @@
-version: '3.8'
 
 services:
   mqtt-broker:
@@ -78,17 +77,15 @@ services:
     container_name: iot_mysql
     restart: always
     environment:
-      - MYSQL_ROOT_PASSWORD=devroot123
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
       - MYSQL_DATABASE=devicemanagement
       - MYSQL_USER=apiuser
-      - MYSQL_PASSWORD=devpass123
-    ports:
-      - "3306:3306"   # 方便本機用 DB client 連進去看資料，非必要可拿掉
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
     volumes:
       - ./mysql-data:/var/lib/mysql
       - ./API/schema.sql:/docker-entrypoint-initdb.d/schema.sql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-pdevroot123"]
+      test: ["CMD-SHELL", 'MYSQL_PWD="$$MYSQL_PASSWORD" mysql -h 127.0.0.1 -u"$$MYSQL_USER" -D "$$MYSQL_DATABASE" -Nse "SELECT 1" >/dev/null']
       interval: 5s
       timeout: 5s
       retries: 10
@@ -102,8 +99,8 @@ services:
     environment:
       - DB_HOST=mysql
       - DB_USER=apiuser
-      - DB_PASS=devpass123
-      - DB_PASSWORD=devpass123
+      - DB_PASS=${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      - DB_PASSWORD=${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
       - DB_NAME=devicemanagement
       - CONTROL_MODE=mqtt
       - MQTT_HOST=mqtt-broker
@@ -135,8 +132,8 @@ services:
     environment:
       - DB_HOST=mysql
       - DB_USER=apiuser
-      - DB_PASS=devpass123
-      - DB_PASSWORD=devpass123
+      - DB_PASS=${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      - DB_PASSWORD=${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
       - DB_NAME=devicemanagement
       - MQTT_HOST=mqtt-broker
       - MQTT_PORT=8883
@@ -165,7 +162,7 @@ services:
     environment:
       - DB_HOST=mysql
       - DB_USER=apiuser
-      - DB_PASS=devpass123
+      - DB_PASS=${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
       - DB_NAME=devicemanagement
       - MQTT_HOST=mqtt-broker
       - MQTT_PORT=8883

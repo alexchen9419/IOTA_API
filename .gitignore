@@ -22,3 +22,8 @@ ledger-backup-*/
 
 # Claude Code 個人設定
 **/.claude/settings.local.json
+
+# Local DB credentials and recovery files
+/.ledger.env
+/security-backup-*/
+/security-db-rotation.pending
