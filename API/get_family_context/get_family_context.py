@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import json
+from common.safe_error import public_detail
 import sys
 import pymysql
 import os
@@ -108,12 +109,12 @@ def main():
 
         except pymysql.MySQLError as e:
             conn.rollback()
-            response_json({"status": "Error", "msg": "資料庫操作失敗", "detail": str(e)}, 500)
+            response_json({"status": "Error", "msg": "資料庫操作失敗", "detail": public_detail(e)}, 500)
         finally:
             conn.close()
 
     except Exception as e:
-        response_json({"status": "Error", "msg": "伺服器內部錯誤", "detail": str(e)}, 500)
+        response_json({"status": "Error", "msg": "伺服器內部錯誤", "detail": public_detail(e)}, 500)
 
 if __name__ == "__main__":
     main()

@@ -24,6 +24,7 @@ POST JSON 範例：
 """
 
 import json
+from common.safe_error import public_detail
 import os
 import sys
 import urllib.parse
@@ -52,10 +53,7 @@ def response_json(data: Dict[str, Any], status_code: int = 200) -> None:
     例如 paired_at、last_update 從 MySQL 取出時可能是 datetime 物件。
     """
     print(f"Status: {status_code}")
-    print("Content-Type: application/json; charset=utf-8")
-    print("Access-Control-Allow-Origin: *")
-    print("Access-Control-Allow-Methods: GET, POST, OPTIONS")
-    print("Access-Control-Allow-Headers: Content-Type, Authorization\n")
+    print("Content-Type: application/json; charset=utf-8\n")
     print(json.dumps(data, ensure_ascii=False, default=str))
     sys.exit()
 
@@ -198,7 +196,7 @@ def main() -> None:
     except Exception as e:
         # 測試階段保留 detail，方便看出 SQL 或連線錯誤。
         # 正式版可移除 detail，避免洩漏系統細節。
-        response_json({"status": "Error", "msg": "伺服器內部錯誤", "detail": str(e)}, 500)
+        response_json({"status": "Error", "msg": "伺服器內部錯誤", "detail": public_detail(e)}, 500)
 
 
 if __name__ == "__main__":

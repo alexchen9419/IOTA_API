@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import json
+from common.safe_error import public_detail
 import sys
 import pymysql
 import os
@@ -151,12 +152,12 @@ def main():
             if e.args[0] == 1062: # MySQL 重複鍵值錯誤
                  response_json({"status": "Error", "msg": "系統異常：您似乎已經是該家庭的成員"}, 409)
             else:
-                 response_json({"status": "Error", "msg": "資料庫操作失敗", "detail": str(e)}, 500)
+                 response_json({"status": "Error", "msg": "資料庫操作失敗", "detail": public_detail(e)}, 500)
         finally:
             conn.close()
 
     except Exception as e:
-        response_json({"status": "Error", "msg": "伺服器內部錯誤", "detail": str(e)}, 500)
+        response_json({"status": "Error", "msg": "伺服器內部錯誤", "detail": public_detail(e)}, 500)
 
 if __name__ == "__main__":
     main()

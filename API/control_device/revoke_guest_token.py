@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+from common.safe_error import public_detail
 import os
 import sys
 import traceback
@@ -223,11 +224,11 @@ def main() -> None:
     except json.JSONDecodeError as exc:
         if conn:
             conn.rollback()
-        respond(400, {"status": "Error", "code": "INVALID_JSON", "message": "Request body must be valid JSON.", "detail": str(exc)})
+        respond(400, {"status": "Error", "code": "INVALID_JSON", "message": "Request body must be valid JSON.", "detail": public_detail(exc)})
     except Exception as exc:
         if conn:
             conn.rollback()
-        detail = traceback.format_exc() if os.getenv("DEBUG", "0") == "1" else str(exc)
+        detail = public_detail(exc)
         respond(500, {"status": "Error", "code": "INTERNAL_ERROR", "message": "Unexpected server error.", "detail": detail})
     finally:
         if conn:

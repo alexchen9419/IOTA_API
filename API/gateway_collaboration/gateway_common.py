@@ -60,10 +60,7 @@ class ApiError(Exception):
 def response_json(data: Dict[str, Any], status_code: int = 200) -> None:
     """輸出 CGI JSON 回應並結束程式。"""
     print(f"Status: {status_code}")
-    print("Content-Type: application/json; charset=utf-8")
-    print("Access-Control-Allow-Origin: *")
-    print("Access-Control-Allow-Methods: GET, POST, OPTIONS")
-    print("Access-Control-Allow-Headers: Content-Type, Authorization\n")
+    print("Content-Type: application/json; charset=utf-8\n")
     print(json.dumps(data, ensure_ascii=False, default=str))
     raise SystemExit
 

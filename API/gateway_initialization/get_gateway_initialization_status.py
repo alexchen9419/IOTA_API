@@ -18,6 +18,7 @@ POST JSON:
 from __future__ import annotations
 
 import os
+from common.safe_error import public_detail
 import sys
 
 from gateway_init_common import (
@@ -129,7 +130,7 @@ def main() -> None:
         handle_api_error(exc)
     except Exception as exc:
         response_json(
-            {"status": "Error", "msg": "伺服器內部錯誤", "detail": str(exc)},
+            {"status": "Error", "msg": "伺服器內部錯誤", "detail": public_detail(exc)},
             500,
         )
     finally:

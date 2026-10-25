@@ -16,6 +16,7 @@ POST JSON:
 """
 
 import json
+from common.safe_error import public_detail
 import sys
 
 import pymysql
@@ -199,9 +200,9 @@ def main() -> None:
     except ApiError as e:
         handle_api_error(e)
     except pymysql.err.IntegrityError as e:
-        response_json({"status": "Error", "msg": "資料庫約束失敗", "detail": str(e)}, 409)
+        response_json({"status": "Error", "msg": "資料庫約束失敗", "detail": public_detail(e)}, 409)
     except Exception as e:
-        response_json({"status": "Error", "msg": "伺服器內部錯誤", "detail": str(e)}, 500)
+        response_json({"status": "Error", "msg": "伺服器內部錯誤", "detail": public_detail(e)}, 500)
 
 
 if __name__ == "__main__":

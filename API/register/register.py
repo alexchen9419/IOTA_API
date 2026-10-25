@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import json
+from common.safe_error import public_detail
 import sys
 import pymysql
 import bcrypt
@@ -78,13 +79,13 @@ def main():
             if e.args[0] == 1062:
                 response_json({"status": "Error", "msg": f"帳號 '{user_id}' 已被使用，請換一個。"}, 409)
             else:
-                response_json({"status": "Error", "msg": "資料庫完整性錯誤", "detail": str(e)}, 400)
+                response_json({"status": "Error", "msg": "資料庫完整性錯誤", "detail": public_detail(e)}, 400)
         
         finally:
             conn.close()
 
     except Exception as e:
-        response_json({"status": "Error", "msg": "伺服器內部錯誤", "detail": str(e)}, 500)
+        response_json({"status": "Error", "msg": "伺服器內部錯誤", "detail": public_detail(e)}, 500)
 
 if __name__ == "__main__":
     main()

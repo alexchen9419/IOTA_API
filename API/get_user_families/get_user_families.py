@@ -24,6 +24,7 @@ POST /get_user_families  {"payload": {"user_id": "admin001"}}
 """
 
 import json
+from common.safe_error import public_detail
 import os
 import sys
 import urllib.parse
@@ -162,7 +163,7 @@ def main() -> None:
         response_json({"status": "Error", "msg": "JSON 格式錯誤"}, 400)
     except Exception as e:
         response_json(
-            {"status": "Error", "msg": "伺服器內部錯誤", "detail": str(e)}, 500
+            {"status": "Error", "msg": "伺服器內部錯誤", "detail": public_detail(e)}, 500
         )
 
 

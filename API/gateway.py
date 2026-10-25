@@ -10,6 +10,9 @@ codes instead of always-200.
 """
 from __future__ import annotations
 
+import hmac
+import json
+import logging
 import os
 import subprocess
 import sys
@@ -20,6 +23,9 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 BASE_DIR = Path(__file__).parent
+log = logging.getLogger("gateway")
+# DEBUG=1 才會把例外細節（traceback）回給客戶端；預設一律只寫進伺服器日誌。
+DEBUG = os.environ.get("DEBUG", "0") == "1"
 
 # route -> (script path relative to BASE_DIR, allowed HTTP methods)
 ROUTES: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -78,7 +84,44 @@ ROUTES: dict[str, tuple[str, tuple[str, ...]]] = {
         ("GET", "POST"),
     ),
     "revoke_gateway_trust": ("gateway_collaboration/revoke_gateway_trust.py", ("POST",)),
+    # UC4.4 異常通報。這支腳本本身不驗證呼叫者（見 report_security_anomaly_README.md），
+    # 所以在閘道這層要求服務金鑰（SERVICE_TOKEN_ROUTES），不然任何人都能灌假警報。
+    "report_security_anomaly": ("security_anomaly/report_security_anomaly.py", ("POST",)),
 }
+
+# route -> 存放服務金鑰的環境變數；請求要帶 X-Service-Token（至少 32 字元）。
+SERVICE_TOKEN_ROUTES = {"report_security_anomaly": "ANOMALY_SERVICE_TOKEN"}
+
+
+def check_service_token(route: str, request: Request) -> Optional[Response]:
+    """受保護的路由：金鑰沒設或不符就擋下，回 None 表示放行。"""
+    env_name = SERVICE_TOKEN_ROUTES.get(route)
+    if not env_name:
+        return None
+    expected = os.environ.get(env_name, "")
+    if len(expected) < 32:
+        return Response(content='{"status":"Error","msg":"Service token not configured"}',
+                        status_code=503, media_type="application/json")
+    given = request.headers.get("x-service-token", "")
+    if not hmac.compare_digest(given.encode(), expected.encode()):
+        return Response(content='{"status":"Error","msg":"Unauthorized"}',
+                        status_code=401, media_type="application/json")
+    return None
+
+
+def scrub_error_body(body: bytes, status_code: int) -> bytes:
+    """兜底：5xx 的 JSON 回應拿掉 detail / traceback，避免任何腳本漏網洩漏內部細節。"""
+    if DEBUG or status_code < 500:
+        return body
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return body
+    if isinstance(data, dict) and ("detail" in data or "traceback" in data):
+        data.pop("detail", None)
+        data.pop("traceback", None)
+        return json.dumps(data, ensure_ascii=False).encode("utf-8")
+    return body
 
 app = FastAPI(title="Family/Device Management API")
 
@@ -90,15 +133,18 @@ app.include_router(ledger_router)
 # Access-Control-Allow-Origin，但 run_cgi() 只解析 Status 與 Content-Type 兩個
 # 標頭，其餘一律丟棄，所以那些設定實際上沒有生效 —— 必須在閘道這層處理。
 #
-# allow_origins=["*"] 是配合「開發機 IP 會變、Web 版 port 也會變」的開發期設定。
-# 這個 API 目前沒有 Cookie/Session（身分靠 payload 裡的 user_id），所以不涉及
-# credentials 外洩；正式部署導入 Token 之後應改成明確的來源白名單。
+# 來源白名單：環境變數 CORS_ORIGINS（逗號分隔的完整 origin，例如
+# https://app.example.com）。另外固定允許 localhost / 127.0.0.1 的任意 port，
+# 因為 `flutter run -d chrome` 的 port 每次不同。其他網站的頁面不能從瀏覽器呼叫這個 API。
+# 原生 App（Android/iOS）不受 CORS 管，不受影響。
+_cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
@@ -125,10 +171,13 @@ def run_cgi(script_rel_path: str, method: str, query_string: str, body: bytes,
         timeout=30,
     )
 
+    if proc.stderr:
+        log.error("CGI %s stderr:\n%s", script_rel_path, proc.stderr.decode("utf-8", errors="replace"))
+
     stdout = proc.stdout
     if not stdout.strip():
-        detail = proc.stderr.decode("utf-8", errors="replace") or f"exit code {proc.returncode}"
-        return Response(content=f'{{"status":"Error","msg":"CGI script produced no output","detail":{detail!r}}}',
+        log.error("CGI %s produced no output (exit code %s)", script_rel_path, proc.returncode)
+        return Response(content='{"status":"Error","msg":"CGI script produced no output"}',
                          status_code=502, media_type="application/json")
 
     header_blob, _, response_body = stdout.partition(b"\n\n")
@@ -148,7 +197,8 @@ def run_cgi(script_rel_path: str, method: str, query_string: str, body: bytes,
         elif key == "content-type":
             media_type = value
 
-    return Response(content=response_body, status_code=status_code, media_type=media_type)
+    return Response(content=scrub_error_body(response_body, status_code),
+                    status_code=status_code, media_type=media_type)
 
 
 async def dispatch(name: str, request: Request) -> Response:
@@ -156,6 +206,9 @@ async def dispatch(name: str, request: Request) -> Response:
     if request.method not in allowed_methods:
         return Response(content='{"status":"Error","msg":"Method not allowed"}',
                          status_code=405, media_type="application/json")
+    denied = check_service_token(name, request)
+    if denied is not None:
+        return denied
     body = await request.body()
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
     return run_cgi(script_rel_path, request.method, request.url.query, body,

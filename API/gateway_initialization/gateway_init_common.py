@@ -95,10 +95,7 @@ class ApiError(Exception):
 
 def response_json(data: Dict[str, Any], status_code: int = 200) -> None:
     print(f"Status: {status_code}")
-    print("Content-Type: application/json; charset=utf-8")
-    print("Access-Control-Allow-Origin: *")
-    print("Access-Control-Allow-Methods: GET, POST, OPTIONS")
-    print("Access-Control-Allow-Headers: Content-Type, Authorization\n")
+    print("Content-Type: application/json; charset=utf-8\n")
     print(json.dumps(data, ensure_ascii=False, default=str))
     raise SystemExit
 
@@ -226,7 +223,8 @@ def atomic_write_json(path: Path, data: Dict[str, Any], mode: int = 0o600) -> No
 
 def load_json_file(path: Path, label: str) -> Dict[str, Any]:
     if not path.exists():
-        raise ApiError(f"找不到 {label}：{path}", 409)
+        print(f"[error] {label} missing at {path}", file=sys.stderr)
+        raise ApiError(f"找不到 {label}", 409)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
@@ -292,7 +290,8 @@ def load_and_validate_identity(state_dir: Optional[Path] = None) -> Dict[str, An
         )
 
     if not private_key_path.exists():
-        raise ApiError(f"找不到 Gateway private key：{private_key_path}", 409)
+        print(f"[error] Gateway private key missing at {private_key_path}", file=sys.stderr)
+        raise ApiError("找不到 Gateway private key", 409)
     try:
         private_key = load_pem_private_key(private_key_path.read_bytes(), password=None)
     except Exception as exc:

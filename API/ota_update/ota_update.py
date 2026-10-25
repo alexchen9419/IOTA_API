@@ -11,9 +11,11 @@ mqtt-server/test_ota.py 手動觸發時完全一致：
 裝置端下載後會驗證 Ed25519 簽章（見 Arduino/MqttSmartLock/OTA.md），
 通過才會 flash 並自動重開機。
 
-本端點不檢查韌體檔案/簽章檔是否真的存在——firmware 目錄掛在 mqtt-server
-容器內，這支腳本所在的 api 容器沒有掛載那個路徑；呼叫者需自行確認檔名、
-且已用 sign_firmware.py 簽過名（見 mqtt-server/firmware/README.md）。
+觸發前本端點會檢查：檔名只能是簡單的 *.bin（不得含路徑字元）、檔案存在於
+firmware 目錄、旁邊有 64 bytes 的 .sig，且用 OTA 公鑰驗證 Ed25519 簽章
+（簽的是 .bin 的 SHA-256，見 mqtt-server/sign_firmware.py）。任何一項不過就不發 MQTT。
+docker-compose.yml 把 ./mqtt-server/firmware 掛到 /firmware、公鑰檔掛到
+/ota/ota_public_key.h（唯讀）；沒掛載就回 503，不會放行。
 
 POST JSON:
 {
@@ -29,11 +31,14 @@ POST JSON:
 
 import hashlib
 import json
+from common.safe_error import public_detail
 import os
+import re
 import sys
 import time
 import uuid
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 
 import pymysql
 from dotenv import load_dotenv
@@ -47,6 +52,10 @@ DB_NAME = os.getenv("DB_NAME", "devicemanagement")
 MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
 # ESP32 要能直接連到的區網 IP，跟 mqtt-server/test_ota.py、Arduino sketch 的 MQTT_BROKER 是同一台機器
 OTA_HOST = os.getenv("OTA_HOST", "192.168.1.3")
+FIRMWARE_DIR = Path(os.getenv("FIRMWARE_DIR", "/firmware"))
+OTA_PUBKEY_FILE = Path(os.getenv("OTA_PUBKEY_FILE", "/ota/ota_public_key.h"))
+FIRMWARE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,98}\.bin$")
+VERSION_RE = re.compile(r"^[A-Za-z0-9._+-]{1,32}$")
 
 sys.stdin.reconfigure(encoding="utf-8")
 sys.stdout.reconfigure(encoding="utf-8")
@@ -57,6 +66,45 @@ def response_json(data: Dict[str, Any], status_code: int = 200) -> None:
     print("Content-Type: application/json; charset=utf-8\n")
     print(json.dumps(data, ensure_ascii=False))
     sys.exit()
+
+
+def load_ota_public_key():
+    """從 ota_public_key.h（Arduino 用的 C 陣列）解析出 32 bytes Ed25519 公鑰。"""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    text = OTA_PUBKEY_FILE.read_text(encoding="utf-8")
+    raw = bytes(int(x, 16) for x in re.findall(r"0x([0-9a-fA-F]{2})", text))
+    if len(raw) != 32:
+        raise ValueError("OTA public key must be 32 bytes")
+    return Ed25519PublicKey.from_public_bytes(raw)
+
+
+def check_firmware(firmware_file: str) -> Optional[Tuple[str, int]]:
+    """檢查韌體與簽章；通過回 None，否則回 (給客戶端的訊息, HTTP 狀態碼)。細節只寫日誌。"""
+    from cryptography.exceptions import InvalidSignature
+
+    try:
+        root = FIRMWARE_DIR.resolve()
+        if not root.is_dir() or not OTA_PUBKEY_FILE.is_file():
+            print(f"[error] firmware store not mounted: {FIRMWARE_DIR} / {OTA_PUBKEY_FILE}", file=sys.stderr)
+            return "韌體庫未設定，無法驗證韌體", 503
+        bin_path = (root / firmware_file).resolve()
+        if bin_path.parent != root:
+            return "firmware_file 不合法", 400
+        if not bin_path.is_file():
+            return "找不到指定的韌體檔案", 404
+        sig_path = bin_path.with_name(bin_path.name + ".sig")
+        if not sig_path.is_file() or sig_path.stat().st_size != 64:
+            return "韌體尚未簽章（缺少有效的 .sig 檔）", 409
+        digest = hashlib.sha256(bin_path.read_bytes()).digest()
+        try:
+            load_ota_public_key().verify(sig_path.read_bytes(), digest)
+        except InvalidSignature:
+            return "韌體簽章驗證失敗，拒絕觸發更新", 409
+    except Exception as exc:
+        public_detail(exc)
+        return "韌體檢查失敗", 500
+    return None
 
 
 def get_conn():
@@ -119,8 +167,10 @@ def main() -> None:
             response_json(
                 {"status": "Error", "msg": "缺少必要參數(family_id, admin_uid, device_id, firmware_file)"}, 400
             )
-        if not firmware_file.endswith(".bin"):
-            response_json({"status": "Error", "msg": "firmware_file 必須是 .bin 檔"}, 400)
+        if not FIRMWARE_NAME_RE.match(firmware_file):
+            response_json({"status": "Error", "msg": "firmware_file 必須是簡單的 .bin 檔名（不可含路徑）"}, 400)
+        if not VERSION_RE.match(version):
+            response_json({"status": "Error", "msg": "version 格式不合法"}, 400)
 
         conn = get_conn()
         try:
@@ -143,6 +193,11 @@ def main() -> None:
                     response_json({"status": "Error", "msg": "裝置不屬於此家庭"}, 403)
                 if str(device.get("status") or "").lower() in {"revoked", "retired", "decommissioned"}:
                     response_json({"status": "Error", "msg": "裝置已除役，無法觸發韌體更新"}, 409)
+
+                # 2.5 韌體與簽章檢查（放在權限檢查之後，非 Admin 無法探測韌體檔案是否存在）
+                fw_error = check_firmware(firmware_file)
+                if fw_error:
+                    response_json({"status": "Error", "msg": fw_error[0]}, fw_error[1])
 
                 # 3. 組出韌體下載網址與 topic（跟 mqtt-server/test_ota.py 一致）
                 firmware_url = f"http://{OTA_HOST}:8080/firmware/{firmware_file}"
@@ -171,7 +226,7 @@ def main() -> None:
                     )
                     conn.commit()
                     response_json(
-                        {"status": "Error", "msg": "MQTT 發布失敗，韌體更新未觸發", "detail": str(mqtt_err), "audit": audit},
+                        {"status": "Error", "msg": "MQTT 發布失敗，韌體更新未觸發", "detail": public_detail(mqtt_err), "audit": audit},
                         502,
                     )
 
@@ -203,12 +258,12 @@ def main() -> None:
 
         except pymysql.MySQLError as e:
             conn.rollback()
-            response_json({"status": "Error", "msg": "資料庫操作失敗", "detail": str(e)}, 500)
+            response_json({"status": "Error", "msg": "資料庫操作失敗", "detail": public_detail(e)}, 500)
         finally:
             conn.close()
 
     except Exception as e:
-        response_json({"status": "Error", "msg": "伺服器內部錯誤", "detail": str(e)}, 500)
+        response_json({"status": "Error", "msg": "伺服器內部錯誤", "detail": public_detail(e)}, 500)
 
 
 if __name__ == "__main__":

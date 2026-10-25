@@ -13,6 +13,7 @@ Response: {"status": "Success", "msg": "密碼已更新", "data": {"user_id": "u
 """
 
 import json
+from common.safe_error import public_detail
 import os
 import sys
 from pathlib import Path
@@ -126,7 +127,7 @@ def main():
     except json.JSONDecodeError:
         response_json({"status": "Error", "msg": "JSON 格式錯誤"}, 400)
     except Exception as e:
-        response_json({"status": "Error", "msg": "伺服器內部錯誤", "detail": str(e)}, 500)
+        response_json({"status": "Error", "msg": "伺服器內部錯誤", "detail": public_detail(e)}, 500)
 
 
 if __name__ == "__main__":

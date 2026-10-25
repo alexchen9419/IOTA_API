@@ -24,6 +24,7 @@ POST /create_family
 """
 
 import json
+from common.safe_error import public_detail
 import os
 import sys
 from pathlib import Path
@@ -179,7 +180,7 @@ def main() -> None:
         except pymysql.MySQLError as e:
             conn.rollback()
             response_json(
-                {"status": "Error", "msg": "資料庫操作失敗", "detail": str(e)}, 500
+                {"status": "Error", "msg": "資料庫操作失敗", "detail": public_detail(e)}, 500
             )
         except Exception:
             conn.rollback()
@@ -191,7 +192,7 @@ def main() -> None:
         response_json({"status": "Error", "msg": "JSON 格式錯誤"}, 400)
     except Exception as e:
         response_json(
-            {"status": "Error", "msg": "伺服器內部錯誤", "detail": str(e)}, 500
+            {"status": "Error", "msg": "伺服器內部錯誤", "detail": public_detail(e)}, 500
         )
 
 

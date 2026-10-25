@@ -62,11 +62,13 @@ services:
     container_name: node_red
     restart: always
     ports:
-      - "1880:1880"   # Node-RED 編輯器
+      - "127.0.0.1:1880:1880"   # Node-RED 編輯器：只綁本機（區網其他裝置不需要連它；要遠端用 SSH 轉發）
     volumes:
       - ./node-red-data:/data
     environment:
       - TZ=Asia/Taipei
+      # 編輯器登入密碼（settings.js 的 adminAuth 讀這個；帳號 admin）
+      - NODE_RED_ADMIN_PASSWORD=${NODE_RED_ADMIN_PASSWORD:?Set NODE_RED_ADMIN_PASSWORD in .env (>= 16 chars)}
     depends_on:
       - mqtt-broker
     networks:
@@ -103,6 +105,10 @@ services:
       - DB_PASSWORD=${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
       - DB_NAME=devicemanagement
       - CONTROL_MODE=mqtt
+      # 瀏覽器 CORS 來源白名單（逗號分隔，例如 https://app.example.com）。localhost / 127.0.0.1 任意 port 預設允許（Flutter Web 開發用）
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+      # /report_security_anomaly 的服務金鑰（呼叫端要帶 X-Service-Token）；>= 32 字元
+      - ANOMALY_SERVICE_TOKEN=${ANOMALY_SERVICE_TOKEN:?Set ANOMALY_SERVICE_TOKEN in .env (>= 32 chars)}
       - MQTT_HOST=mqtt-broker
       - MQTT_PORT=8883
       - MQTT_USE_TLS=1
@@ -116,6 +122,10 @@ services:
     volumes:
       - ./API:/app
       - ./config/certs:/certs:ro
+      # /ota_update 觸發前要檢查韌體與簽章：韌體目錄 + OTA「公鑰」，唯讀。
+      # 只掛公鑰檔，不要掛整個 ota_keys/（那裡有簽章私鑰）。
+      - ./mqtt-server/firmware:/firmware:ro
+      - ./mqtt-server/ota_keys/ota_public_key.h:/ota/ota_public_key.h:ro
     depends_on:
       mysql:
         condition: service_healthy

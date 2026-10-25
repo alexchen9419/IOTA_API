@@ -18,6 +18,7 @@ printf '{"payload":{"device_id":"ESP32_LOCK_001","reason":"汰換舊設備","ope
 
 import hashlib
 import json
+from common.safe_error import public_detail
 import os
 import re
 import sys
@@ -52,10 +53,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 def response_json(data: Dict[str, Any], status_code: int = 200) -> None:
     print(f"Status: {status_code}")
-    print("Content-Type: application/json; charset=utf-8")
-    print("Access-Control-Allow-Origin: *")
-    print("Access-Control-Allow-Methods: GET, POST, OPTIONS")
-    print("Access-Control-Allow-Headers: Content-Type\n")
+    print("Content-Type: application/json; charset=utf-8\n")
     print(json.dumps(data, ensure_ascii=False, default=str))
     sys.exit()
 
@@ -416,18 +414,18 @@ def main() -> None:
         response_json({
             "status": "Error",
             "msg": "資料庫欄位值不相容，請先執行 UC2.3 migration SQL",
-            "detail": str(e),
+            "detail": public_detail(e),
         }, 400)
     except pymysql.err.IntegrityError as e:
         conn.rollback()
         response_json({
             "status": "Error",
             "msg": "資料庫約束失敗，請確認 devices 與 audit_logs 的外鍵資料是否一致",
-            "detail": str(e),
+            "detail": public_detail(e),
         }, 400)
     except Exception as e:
         conn.rollback()
-        response_json({"status": "Error", "msg": "伺服器內部錯誤", "detail": str(e)}, 500)
+        response_json({"status": "Error", "msg": "伺服器內部錯誤", "detail": public_detail(e)}, 500)
     finally:
         conn.close()
 

@@ -36,6 +36,7 @@ POST JSON 格式：
 
 import hashlib
 import json
+from common.safe_error import public_detail
 import os
 import sys
 import time
@@ -76,10 +77,7 @@ def response_json(data: Dict[str, Any], status_code: int = 200) -> None:
     Flutter App 或測試程式會讀取此 JSON 判斷 API 是否成功。
     """
     print(f"Status: {status_code}")
-    print("Content-Type: application/json; charset=utf-8")
-    print("Access-Control-Allow-Origin: *")
-    print("Access-Control-Allow-Methods: GET, POST, OPTIONS")
-    print("Access-Control-Allow-Headers: Content-Type, Authorization\n")
+    print("Content-Type: application/json; charset=utf-8\n")
     print(json.dumps(data, ensure_ascii=False))
     sys.exit()
 
@@ -204,7 +202,10 @@ def build_ecdh_result(device_id: str, gateway_id: str, device_public_key_pem: Op
 
 def resolve_family_id(cursor, family_id: Any, gateway_id: str) -> int:
     """Resolve/validate the family scope used by the ledger event."""
-    requested = int(family_id) if family_id not in (None, "") else None
+    try:
+        requested = int(family_id) if family_id not in (None, "") else None
+    except (TypeError, ValueError):
+        raise ValueError("family_id 格式錯誤") from None
     cursor.execute("SELECT family_id, status FROM gateways WHERE gateway_id=%s LIMIT 1", (gateway_id,))
     gateway = cursor.fetchone()
     if not gateway or gateway.get("family_id") is None:
@@ -558,7 +559,7 @@ def main() -> None:
     except Exception as e:
         # 測試階段保留 detail，方便除錯。
         # 正式部署時可以移除 detail，避免暴露伺服器內部資訊。
-        response_json({"status": "Error", "msg": "伺服器內部錯誤", "detail": str(e)}, 500)
+        response_json({"status": "Error", "msg": "伺服器內部錯誤", "detail": public_detail(e)}, 500)
 
 
 if __name__ == "__main__":

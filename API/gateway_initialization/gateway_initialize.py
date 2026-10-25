@@ -20,6 +20,7 @@ Gateway identity 不由 App 傳入，而是從本機 gateway_runtime/gateway_ide
 from __future__ import annotations
 
 import json
+from common.safe_error import public_detail
 import sys
 
 from gateway_init_common import (
@@ -129,7 +130,8 @@ def main() -> None:
                         family_id=family_id_for_local_state, identity=identity
                     )
                 except Exception as exc:
-                    local_state_warning = f"DB 已初始化，但本機 bootstrap consumed 狀態更新失敗：{exc}"
+                    public_detail(exc)
+                    local_state_warning = "DB 已初始化，但本機 bootstrap consumed 狀態更新失敗"
                 if local_state_warning:
                     result["local_state_warning"] = local_state_warning
                 response_json(
@@ -309,9 +311,10 @@ def main() -> None:
             try:
                 mark_bootstrap_consumed(family_id=family_id, identity=identity)
             except Exception as exc:
+                public_detail(exc)
                 local_state_warning = (
                     "資料庫初始化已成功，但本機 bootstrap consumed 狀態更新失敗；"
-                    f"重送相同初始化請求可安全修復：{exc}"
+                    "重送相同初始化請求可安全修復"
                 )
 
             data = {
@@ -369,7 +372,7 @@ def main() -> None:
             {
                 "status": "Error",
                 "msg": "伺服器內部錯誤",
-                "detail": str(exc),
+                "detail": public_detail(exc),
             },
             500,
         )
