@@ -11,9 +11,10 @@ README 都記載這個缺口，測試時只能手動 INSERT INTO families）。�
 的死路：新使用者註冊完之後，除非有人邀請他，否則永遠停在「目前沒有加入
 任何場域」的空畫面，連帶所有裝置/控制功能都無從測試。
 
-流程（單一 transaction，兩張表要嘛都成功要嘛都不寫）：
+流程（單一 transaction，家庭、成員關係與稽核要嘛都成功要嘛都不寫）：
   1. families      插入一列，admin_uid = 建立者
   2. user_families 插入一列，role = 'Admin'
+  3. audit_logs 記錄 FAMILY_CREATED（使用共用寫鏈模組）
 
 命名衝突處理：同一位使用者底下不允許重複的家庭名稱（回 409），
 避免場域切換時出現兩個看起來一模一樣的選項。不同使用者之間不限制。
@@ -25,15 +26,18 @@ POST /create_family
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Any, Dict
 
 import pymysql
 from dotenv import load_dotenv
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from common.audit_log_service import append_audit_log
 
 load_dotenv()
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_USER = os.getenv("DB_USER", "vboxuser")
-DB_PASS = os.getenv("DB_PASS")
+DB_PASS = os.getenv("DB_PASS") or os.getenv("DB_PASSWORD")
 DB_NAME = os.getenv("DB_NAME", "devicemanagement")
 
 sys.stdin.reconfigure(encoding="utf-8")
@@ -60,6 +64,7 @@ def get_conn():
         database=DB_NAME,
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor,
+        autocommit=False,
     )
 
 
@@ -148,6 +153,12 @@ def main() -> None:
                     (user_id, family_id),
                 )
 
+                audit = append_audit_log(
+                    cursor, actor_id=user_id, actor_type="USER", family_id=family_id,
+                    device_id=None, action="FAMILY_CREATED",
+                    parameters={"family_name": family_name, "initial_role": "Admin"},
+                    status="Verified", decision="ALLOW", reason="FAMILY_CREATED",
+                )
                 conn.commit()
 
             response_json(
@@ -159,6 +170,7 @@ def main() -> None:
                         "family_name": family_name,
                         "admin_uid": user_id,
                         "user_role": "Admin",
+                        "audit_log": audit,
                     },
                 },
                 201,
@@ -169,6 +181,9 @@ def main() -> None:
             response_json(
                 {"status": "Error", "msg": "資料庫操作失敗", "detail": str(e)}, 500
             )
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 

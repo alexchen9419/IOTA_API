@@ -68,7 +68,7 @@ def guest_page_base_url():
 load_dotenv()
 DB_HOST = os.getenv('DB_HOST', 'localhost')
 DB_USER = os.getenv('DB_USER', 'vboxuser')
-DB_PASS = os.getenv('DB_PASS')
+DB_PASS = (os.getenv('DB_PASS') or os.environ['DB_PASSWORD'])
 DB_NAME = os.getenv('DB_NAME', 'devicemanagement')
 
 sys.stdin.reconfigure(encoding='utf-8')
