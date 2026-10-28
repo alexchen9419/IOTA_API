@@ -24,7 +24,6 @@ import json
 import os
 import sys
 import tempfile
-import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -34,6 +33,7 @@ API_ROOT = Path(__file__).resolve().parents[1]
 if str(API_ROOT) not in sys.path:
     sys.path.insert(0, str(API_ROOT))
 
+from common.audit_log_service import append_audit_log as shared_append_audit_log
 from common.ledger_event_service import enqueue_ledger_event
 
 from cryptography.hazmat.primitives import serialization
@@ -440,14 +440,6 @@ def require_active_user_password(
     return user
 
 
-def get_prev_hash(cursor) -> Optional[str]:
-    cursor.execute(
-        "SELECT current_hash FROM audit_logs ORDER BY `timestamp` DESC, command_id DESC LIMIT 1"
-    )
-    row = cursor.fetchone()
-    return row["current_hash"] if row and row.get("current_hash") else None
-
-
 def append_audit_log(
     cursor,
     *,
@@ -459,55 +451,26 @@ def append_audit_log(
     decision: str = "ALLOW",
     reason: Optional[str] = None,
 ) -> Dict[str, Any]:
-    command_id = f"tx-{uuid.uuid4().hex}"
-    timestamp = int(time.time())
-    prev_hash = get_prev_hash(cursor)
-
-    hash_payload = {
-        "command_id": command_id,
-        "user_id": user["user_id"],
-        "u_id": user["id"],
-        "family_id": family_id,
-        "actor_type": "USER",
-        "action": action,
-        "parameters": parameters,
-        "status": status,
-        "decision": decision,
-        "reason": reason,
-        "timestamp": timestamp,
-        "prev_hash": prev_hash,
-    }
-    current_hash = sha256_text(stable_json(hash_payload))
-
-    cursor.execute(
-        """
-        INSERT INTO audit_logs
-          (command_id, user_id, actor_type, u_id, device_id, family_id,
-           action, parameters, status, decision, reason, timestamp, prev_hash, current_hash)
-        VALUES
-          (%s, %s, 'USER', %s, NULL, %s,
-           %s, CAST(%s AS JSON), %s, %s, %s, %s, %s, %s)
-        """,
-        (
-            command_id,
-            user["user_id"],
-            user["id"],
-            family_id,
-            action,
-            json.dumps(parameters, ensure_ascii=False),
-            status,
-            decision,
-            reason,
-            timestamp,
-            prev_hash,
-            current_hash,
-        ),
+    # 雜湊計算與鏈頭加鎖統一交給 common.audit_log_service（同一 cursor / transaction）。
+    audit = shared_append_audit_log(
+        cursor,
+        command_id=f"tx-{uuid.uuid4().hex}",
+        actor_id=user["user_id"],
+        actor_type="USER",
+        u_id=user["id"],
+        family_id=family_id,
+        device_id=None,
+        action=action,
+        parameters=parameters,
+        status=status,
+        decision=decision,
+        reason=reason,
     )
     return {
-        "command_id": command_id,
-        "timestamp": timestamp,
-        "prev_hash": prev_hash,
-        "current_hash": current_hash,
+        "command_id": audit["command_id"],
+        "timestamp": audit["timestamp"],
+        "prev_hash": audit["prev_hash"],
+        "current_hash": audit["current_hash"],
     }
 
 

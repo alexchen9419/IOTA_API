@@ -47,13 +47,17 @@
 #include <time.h>
 
 // ====== 請修改這裡 ======
-const char* WIFI_SSID = "SSID";
-const char* WIFI_PASS = "PWD";
-const char* MQTT_BROKER = "192.168.0.84";  // 跑 mosquitto 的電腦 IP（用 ipconfig 查，不是 127.0.0.1）
-// broker 已關閉匿名。帳號固定是 device，密碼 = repo 根目錄 .env 的 MQTT_DEVICE_PASSWORD
-//（config/gen_mqtt_users.ps1 產生）。燒錄前填入，不要把真密碼 commit 進版控。
-const char* MQTT_USER = "device";
-const char* MQTT_PASS = "CHANGE_ME";
+// WiFi 帳密、broker IP、MQTT 帳密放在同資料夾的 secrets.h（已在 .gitignore，不進版控）。
+// 第一次燒錄前：把 secrets.example.h 複製成 secrets.h 再填值。
+//   WIFI_SSID / WIFI_PASS
+//   MQTT_BROKER  跑 mosquitto 的電腦 IP（用 ipconfig 查，不是 127.0.0.1），要跟 .env 的 OTA_HOST 同一台
+//   MQTT_USER    固定是 device
+//   MQTT_PASS    repo 根目錄 .env 的 MQTT_DEVICE_PASSWORD（config/gen_mqtt_users.ps1 產生）
+#if __has_include("secrets.h")
+  #include "secrets.h"
+#else
+  #error "找不到 secrets.h：請把 secrets.example.h 複製成 secrets.h 並填入 WiFi / MQTT 設定"
+#endif
 
 // MQTT 加密開關。
 //

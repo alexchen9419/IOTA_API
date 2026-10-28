@@ -28,10 +28,10 @@ docker compose up -d --build
 docker logs -f mqtt_server        # 應印出「Broker 連線成功」
 ```
 
-- 防火牆需開放：TCP `8883`（ESP32 連 broker，TLS）、`8080`（OTA 韌體下載）、`8090`（網頁監控）、`8091`（家庭/裝置管理 API）、`3306`（MySQL，除錯用可拿掉）、`1880`（Node-RED）
-- Arduino sketch 裡的 `MQTT_BROKER` 要改成跑 Docker 這台機器的區網 IP
+- 防火牆需開放：TCP `8883`（ESP32 連 broker，TLS）、`8080`（OTA 韌體下載）、`8090`（網頁監控）、`8091`（家庭/裝置管理 API）、`1880`（Node-RED）
+- 韌體設定放在 `Arduino/MqttSmartLock/secrets.h`（從 `secrets.example.h` 複製，不進版控）：`MQTT_BROKER` 填跑 Docker 這台機器的區網 IP，`MQTT_PASS` 填 `.env` 的 `MQTT_DEVICE_PASSWORD`；同一個 IP 也要填進 `.env` 的 `OTA_HOST`
 - **換機器/換區網 IP 記得重新產生 TLS 憑證**（見「MQTT TLS 加密」），CA 簽的 server 憑證綁定特定 IP，換了 IP 沒重簽的話 ESP32 會直接連線失敗
-- `docker-compose.yml` 裡的 MySQL 密碼是本機開發用的預設值（`devroot123` / `devpass123`），正式環境要換掉
+- MySQL 等密碼都從 `.env` 讀取（範本見 `.env.example`），`docker-compose.yml` 不再寫死；MySQL 也不再對外開放 3306
 - repo 用 [`.gitattributes`](.gitattributes) 統一文字檔換行符為 LF，Windows 上 clone/編輯不用擔心 CRLF 被 git 標記異動
 
 ## MQTT 協定
