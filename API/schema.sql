@@ -120,6 +120,14 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   KEY idx_timestamp (timestamp)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- audit_logs 雜湊鏈的寫入鎖：common/audit_log_service.py 在同一 transaction 內
+-- 先 SELECT ... FOR UPDATE 這一列，再讀鏈頭 / INSERT，避免兩個並行寫入者讀到
+-- 同一個 prev_hash 而讓鏈分叉。只會有 id=1 這一列。
+CREATE TABLE IF NOT EXISTS audit_chain_lock (
+  id TINYINT UNSIGNED NOT NULL PRIMARY KEY
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+INSERT IGNORE INTO audit_chain_lock (id) VALUES (1);
+
 CREATE TABLE IF NOT EXISTS guest_tokens (
   token_id        VARCHAR(191) PRIMARY KEY,
   token_hash      CHAR(64) NOT NULL,
