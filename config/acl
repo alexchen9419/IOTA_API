@@ -25,3 +25,9 @@ topic write home/device/+/event
 topic read home/device/+/config
 topic read home/device/+/cmd
 topic read home/device/+/ota
+# 廣播配對（docs/PAIRING.md）：配對模式時 announce、回報 result、收自己的 accept。
+# accept 帶 family_id；一般裝置帳號共用時讀得到別台的 accept，屬於 v1 已知取捨，
+# 改成一台一組帳號後應收斂成 pattern + %u。
+topic write home/pair/announce
+topic write home/pair/+/result
+topic read home/pair/+/accept

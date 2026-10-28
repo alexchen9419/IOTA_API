@@ -85,6 +85,16 @@ class ApiConfig {
   static Uri uri(String endpoint) =>
       Uri.parse('$baseUrl/${endpoint.replaceAll(RegExp(r'^/+'), '')}');
 
+  /// mqtt-server 的 HTTP 服務埠（OTA 下載與配對探索，見 docs/PAIRING.md §4）。
+  /// 它跟 API 閘道跑在同一台機器，只是埠不同，所以沿用使用者設定的主機。
+  static const int pairingPort = 8080;
+
+  /// mqtt-server 配對端點的完整網址，例如 `pair/pending`。
+  static Uri pairingUri(String path) => Uri.parse(baseUrl).replace(
+        port: pairingPort,
+        path: '/${path.replaceAll(RegExp(r'^/+'), '')}',
+      );
+
   static String get _platformDefaultBaseUrl {
     // Web：跟著網頁本身的 origin 走，開發時通常有 proxy 或同源部署。
     if (kIsWeb) {

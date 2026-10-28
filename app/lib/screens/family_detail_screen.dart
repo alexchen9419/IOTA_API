@@ -11,6 +11,7 @@ import '../widgets/device_admin_dialogs.dart';
 import '../widgets/device_card.dart';
 import '../widgets/device_control_sheet.dart';
 import '../widgets/empty_state.dart';
+import 'add_device_screen.dart';
 import 'dashboard_screen.dart';
 import 'guest_qr_screen.dart';
 
@@ -179,13 +180,18 @@ class _FamilyDetailScreenState extends State<FamilyDetailScreen>
     if (mounted) await _fetchDevices();
   }
 
+  /// 新增裝置頁：先用廣播配對自動找附近的鎖，找不到再改手動輸入 MAC。
   Future<void> _pairNewDevice() async {
-    final paired = await DeviceAdminDialogs.pairDevice(
-      context: context,
-      familyId: widget.familyId,
-      ownerUserId: widget.currentUserId,
+    final paired = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AddDeviceScreen(
+          familyId: widget.familyId,
+          ownerUserId: widget.currentUserId,
+        ),
+      ),
     );
-    if (paired) await _fetchDevices();
+    if (paired == true) await _fetchDevices();
   }
 
   // ------------------------------------------------------------------
@@ -619,6 +625,13 @@ class _FamilyDetailScreenState extends State<FamilyDetailScreen>
               ),
             ).then((_) => _fetchDevices()),
           ),
+          // 「配對裝置」FAB 只在設備分頁出現；AppBar 這顆在任何分頁都看得到。
+          if (_isAdmin)
+            IconButton(
+              tooltip: '新增裝置',
+              icon: const Icon(Icons.add_link),
+              onPressed: _pairNewDevice,
+            ),
           if (_isAdmin)
             IconButton(
               tooltip: '訪客授權 QR',

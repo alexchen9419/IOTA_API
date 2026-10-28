@@ -475,7 +475,7 @@ class DeviceAdminDialogs {
         return false;
       }
 
-      await _showPairingResult(context, result.dataMap);
+      await showPairingResult(context, result.dataMap);
       return true;
     } finally {
       idController.dispose();
@@ -483,7 +483,8 @@ class DeviceAdminDialogs {
     }
   }
 
-  static Future<void> _showPairingResult(
+  /// 顯示 `/device_pair` 的結果（金鑰協商與稽核鏈）。新增裝置頁也共用。
+  static Future<void> showPairingResult(
     BuildContext context,
     Map<String, dynamic> data,
   ) async {
