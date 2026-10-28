@@ -126,6 +126,7 @@ class ApiEndpoints {
   // 帳號與場域
   static const String register = 'register';
   static const String login = 'login';
+  static const String changePassword = 'change_password';
   static const String createFamily = 'create_family';
   static const String getUserFamilies = 'get_user_families';
   static const String getFamilyMembers = 'get_family_members';
@@ -136,6 +137,10 @@ class ApiEndpoints {
   static const String respondInvitation = 'respond_invitation';
   static const String updateMemberRole = 'update_member_role';
   static const String generateGuestQr = 'generate_guest_qr';
+
+  // 訪客通行碼（UC3.5）：清單用來取得 token_id，撤銷要帶它。
+  static const String listGuestTokens = 'list_guest_tokens';
+  static const String revokeGuestToken = 'revoke_guest_token';
 
   // 裝置生命週期
   static const String devicePair = 'device_pair';
