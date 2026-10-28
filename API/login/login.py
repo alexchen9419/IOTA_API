@@ -70,6 +70,14 @@ def main():
                 cursor.execute(sql_families, (user_id,))
                 family_list = cursor.fetchall()
 
+                # 管理員協助重設後，用臨時密碼登入要強制改密碼。舊 DB 沒有這個欄位就當作不用改。
+                must_change_password = False
+                cursor.execute("SHOW COLUMNS FROM users LIKE 'must_change_password'")
+                if cursor.fetchone() is not None:
+                    cursor.execute("SELECT must_change_password FROM users WHERE user_id = %s", (user_id,))
+                    flag_row = cursor.fetchone()
+                    must_change_password = bool(flag_row and flag_row['must_change_password'])
+
                 # --- 修正：4. 回傳資訊將全域 role 替換為全域 status ---
                 response_json({
                     "status": "Success",
@@ -78,6 +86,7 @@ def main():
                         "user_id": user_record['user_id'],
                         "username": user_record['username'],
                         "status": user_record['status'],
+                        "must_change_password": must_change_password,
                         "families": family_list  # 回傳包含該用戶在各個家庭身分的陣列
                     }
                 })

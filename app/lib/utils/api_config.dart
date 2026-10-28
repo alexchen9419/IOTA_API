@@ -127,6 +127,9 @@ class ApiEndpoints {
   static const String register = 'register';
   static const String login = 'login';
   static const String changePassword = 'change_password';
+
+  /// 忘記密碼：場域 Admin 幫成員重設，回傳一次性臨時密碼。
+  static const String adminResetPassword = 'admin_reset_password';
   static const String createFamily = 'create_family';
   static const String getUserFamilies = 'get_user_families';
   static const String getFamilyMembers = 'get_family_members';
