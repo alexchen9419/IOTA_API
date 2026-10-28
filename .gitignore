@@ -29,3 +29,13 @@ ledger-backup-*/
 /.ledger.env
 /security-backup-*/
 /security-db-rotation.pending
+
+# Arduino 韌體的 WiFi / MQTT 帳密（範本是 secrets.example.h）
+Arduino/MqttSmartLock/secrets.h
+
+# Node-RED 執行期檔案：登入 session、憑證加密金鑰、加密後的憑證與自動備份，都不進版控
+node-red-data/.sessions.json
+node-red-data/.config.runtime.json
+node-red-data/.config.users.json
+node-red-data/flows_cred.json
+node-red-data/.*.backup
