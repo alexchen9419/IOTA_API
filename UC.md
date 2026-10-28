@@ -2,6 +2,8 @@
 
 根據文件中「實際 UC」內容整理，並對照 `API/`、`mqtt-server/` 實際程式碼逐項核對完成度。
 
+最後核對：2026-10-28（`main` @ `c736363`）。
+
 **圖例**：✅ 完成　🟡 部分完成　❌ 未做
 
 ---
@@ -12,17 +14,17 @@
 | :-- | :-- | :-: | :-- | :-- |
 | UC1.1 | 使用者帳號註冊 | ✅ | 使用者透過行動應用程式（App）或 Web 管理後台進行首次帳號建立。 | 余駿豪、陳重旭 |
 | UC1.2 | 使用者身分驗證（登入/登出） | 🟡 | 使用者透過密碼取得存取 Token。此案例亦包含使用者主動發起登出操作，由系統安全清除當前的存取權杖（Token）與連線狀態。 | 余駿豪、陳重旭 |
-| UC1.3 | 閘道器初始化與屋主綁定 | ❌ | 首位使用者透過實體連線將帳號與本地 Gateway 綁定，並生成區塊鏈創世區塊。 | 李丞軒 |
-| UC1.4 | 跨場域閘道器協作設定 | ❌ | 屋主將多台地理位置不同的閘道器（如：自家、租屋處）進行信任綁定，建立聯合管理基礎。 | 李丞軒 |
-| UC1.5 | 跨房屋情境切換與環境同步 | ❌ | 使用者在擁有多個房屋存取權的情況下，於 App 切換當前操作場域，系統需依據該帳號在該場域的角色，同步對應的設備清單與功能權限。 | 陳重旭 |
+| UC1.3 | 閘道器初始化與屋主綁定 | 🟡 | 首位使用者透過實體連線將帳號與本地 Gateway 綁定，並生成區塊鏈創世區塊。 | 李丞軒 |
+| UC1.4 | 跨場域閘道器協作設定 | 🟡 | 屋主將多台地理位置不同的閘道器（如：自家、租屋處）進行信任綁定，建立聯合管理基礎。 | 李丞軒 |
+| UC1.5 | 跨房屋情境切換與環境同步 | ✅ | 使用者在擁有多個房屋存取權的情況下，於 App 切換當前操作場域，系統需依據該帳號在該場域的角色，同步對應的設備清單與功能權限。 | 陳重旭 |
 
 **備註**：
 
 - **UC1.1** — `API/register/register.py`
-- **UC1.2** — 只有 `API/login/login.py`；沒有登出、也沒有核發 Token——login 只驗證密碼回傳資料，後續 API 都靠 payload 裡明文 `user_id` 判斷身分
-- **UC1.3** — 沒有對應 endpoint；也沒有「建立家庭」的 API（目前測試靠手動 `INSERT INTO families`）
-- **UC1.4** — 沒有實作
-- **UC1.5** — 沒有專屬 endpoint；各 API 都是每次呼叫直接帶 `family_id` 參數，沒有「目前場域」狀態或同步機制
+- **UC1.2** — `API/login/login.py` + `API/change_password/`（修改密碼）；仍沒有登出、也沒有核發 Token——login 只驗證密碼回傳資料，後續 API 都靠 payload 裡明文 `user_id` 判斷身分
+- **UC1.3** — `API/gateway_initialization/`（`/gateway_initialize`、`/gateway_initialization_status`）已實作並掛上路由，初始化會寫入待上鏈事件；App 還沒有對應畫面。建立家庭另有 `API/create_family/`
+- **UC1.4** — `API/gateway_collaboration/`（建立／確認／列出／撤銷信任）已實作並掛上路由；App 還沒有對應畫面
+- **UC1.5** — `API/get_family_context/` 依角色回傳該場域的設備與權限，App 有場域切換畫面
 
 ## 設備生命週期管理
 
@@ -35,8 +37,8 @@
 **備註**：
 
 - **UC2.1** — `API/device_pair/device_pair.py`，ECDH + HKDF、寫入 audit_logs 雜湊鏈
-- **UC2.2** — `mqtt-server` 的 OTA 有 Ed25519 數位簽章：韌體用 `sign_firmware.py` 簽署 SHA-256 雜湊值，ESP32 邊下載邊算雜湊、驗證通過才切換分區，驗證失敗會拒絕更新且不變磚。新增 `API/ota_update/ota_update.py` 端點後，觸發路徑改回「Admin 下發」：呼叫者必須是該家庭的 Admin（查 `user_families` 角色）才能觸發，通過後才對 mqtt-server 發布跟 `test_ota.py` 相同格式的 MQTT 觸發訊息，並寫入稽核日誌，跟 UC 描述吻合。仍有兩個已知落差：(1) 該端點不檢查韌體檔案/簽章檔是否真的存在、也不比對版本，打錯檔名要等裝置端下載失敗才會發現；(2) 簽章驗證邏輯只在 server 端用假韌體交叉驗證過，**Arduino 端這段完整流程還沒在實體 ESP32 上跑過**
-- **UC2.3** — `API/decommission_device/decommission_device.py` 檔案開頭自己註明「不含身分驗證版」，誰都能呼叫，跟「安全」解綁有落差
+- **UC2.2** — （10/24 更新）`ota_update.py` 現在會檢查韌體檔存在、`.sig` 的 Ed25519 簽章與版本格式，下方第 (1) 點已解決。`mqtt-server` 的 OTA 有 Ed25519 數位簽章：韌體用 `sign_firmware.py` 簽署 SHA-256 雜湊值，ESP32 邊下載邊算雜湊、驗證通過才切換分區，驗證失敗會拒絕更新且不變磚。新增 `API/ota_update/ota_update.py` 端點後，觸發路徑改回「Admin 下發」：呼叫者必須是該家庭的 Admin（查 `user_families` 角色）才能觸發，通過後才對 mqtt-server 發布跟 `test_ota.py` 相同格式的 MQTT 觸發訊息，並寫入稽核日誌，跟 UC 描述吻合。仍有兩個已知落差：(1) 該端點不檢查韌體檔案/簽章檔是否真的存在、也不比對版本，打錯檔名要等裝置端下載失敗才會發現；(2) 簽章驗證邏輯只在 server 端用假韌體交叉驗證過，**Arduino 端這段完整流程還沒在實體 ESP32 上跑過**
+- **UC2.3** — `API/decommission_device/decommission_device.py` 已加入 Admin 角色檢查並撤銷設備憑證；但呼叫者身分仍取自 payload 的 `operator_user_id`（沒有 Token），可被冒用
 
 ## 零信任存取與授權管理
 
@@ -45,16 +47,16 @@
 | UC3.1 | 設定零信任存取策略 | 🟡 | 允許屋主設定基於「角色」、「時間區間」、「功能存取」與「設備」的細粒度授權規則，以控管所有存取請求。 | 李丞軒 |
 | UC3.2 | 跨房屋成員邀請與身分定義 | ✅ | Admin 可邀請其他已註冊帳號加入特定場域。例如，屋主在 A 屋為 Admin，邀請 B 屋的屋主加入 A 屋成為 Guest，實現單一帳號的多重角色管理。 | 李丞軒、陳重旭、詹宜靜 |
 | UC3.3 | 移除成員與撤銷權限 | 🟡 | Admin 針對特定場域移除成員，該操作不影響該成員在其他場域的身分。 | 陳重旭 |
-| UC3.4 | 核發訪客臨時授權 | 🟡 | 系統協助屋主產生具備「絕對有效期限」或「單次/有限次數」限制的短效期控制令牌，供訪客使用。 | 李丞軒、陳重旭 |
-| UC3.5 | 撤銷訪客臨時令牌 | ❌ | Admin 在訪客臨時令牌尚未自然過期或次數未耗盡前，主動發起撤銷操作。 | 陳重旭 |
+| UC3.4 | 核發訪客臨時授權 | ✅ | 系統協助屋主產生具備「絕對有效期限」或「單次/有限次數」限制的短效期控制令牌，供訪客使用。 | 李丞軒、陳重旭 |
+| UC3.5 | 撤銷訪客臨時令牌 | ✅ | Admin 在訪客臨時令牌尚未自然過期或次數未耗盡前，主動發起撤銷操作。 | 陳重旭 |
 
 **備註**：
 
 - **UC3.1** — `control_device.py` 有讀 `policy_rules` 做零信任判斷，但沒有任何 endpoint 能寫入/設定，引擎在、管理介面不在
 - **UC3.2** — `API/send_invitation/` + `API/respond_invitation/`
 - **UC3.3** — 沒有專屬「移除」endpoint，但 `API/update_member_role/` 可把角色設成 `Revoked` 達到類似效果
-- **UC3.4** — 兩套並存但沒有互相關聯：`API/generate_guest_qr/`（走 `user_families` 帳號式）跟 `API/control_device/issue_guest_token_demo.py`（走 `guest_tokens` 表，僅測試用 demo，沒掛進正式閘道）
-- **UC3.5** — `guest_tokens` 表有 `revoked` 欄位，但沒有任何 endpoint 會去設定它
+- **UC3.4** — `API/generate_guest_qr/` 改發 `guest_tokens`（有效期限／次數限制），訪客用 `API/guest_page/` 的開門頁經 `/guest_access` 操作；訪客頁網址由 `.env` 的 `GUEST_QR_BASE_URL` 設定
+- **UC3.5** — `API/control_device/revoke_guest_token.py`（`/revoke_guest_token`）已掛上路由，另有 `list_guest_tokens.py` 列出令牌
 
 ## 日常營運與狀態監控
 
@@ -63,7 +65,7 @@
 | UC4.1 | 執行跨場域遠端控制 | ✅ | 接收屋主或家人發送的控制封包，經閘道器零信任引擎驗證通過後，下發指令至終端設備執行物理作動。 | 陳泰頤 |
 | UC4.2 | 執行訪客受限控制 | ✅ | 訪客憑藉短效期令牌發送控制指令，系統驗證其時間戳記與次數限制後，僅允許執行受限的設備操作。 | 李丞軒、余駿豪、陳泰頤 |
 | UC4.3 | 檢視場域儀表板與狀態 | ✅ | 符合權限之使用者對系統要求提供儀表板，系統依據目前切換的房屋情境，顯示該場域終端裝置的物理狀態與連線健康度。 | 李丞軒、余駿豪 |
-| UC4.4 | 接收分權通知與異常推播 | ❌ | 系統依據場域身分發送通知，使用者僅能接收到其具備權限之房屋的異狀警報。 | 陳重旭 |
+| UC4.4 | 接收分權通知與異常推播 | ✅ | 系統依據場域身分發送通知，使用者僅能接收到其具備權限之房屋的異狀警報。 | 陳重旭 |
 | UC4.5 | 同步緊急實體覆寫紀錄 | 🟡 | 當場域發生實體操作時，設備向對應場域的閘道器補發紀錄。 | 蔡孟穎、詹宜靜 |
 
 **備註**：
@@ -71,7 +73,7 @@
 - **UC4.1** — `API/control_device/control_device.py`，已實際接上真實 MQTT/ESP32 並驗證過（見 `mqtt_topic_bridge.py`）
 - **UC4.2** — 同一支 `control_device.py` 的 guest_token 分支
 - **UC4.3** — `API/dashboard/get_family_dashboard.py`
-- **UC4.4** — `respond_invitation.py`/`generate_guest_qr.py` 有發 MQTT 通知，但發到沒人訂閱的 `home/security/gateway_*` topic，等於沒有真的送達使用者
+- **UC4.4** — `api-mqtt-bridge` 把門鈴／防拆事件轉發到 `home/security/{family}/alert`，獨立的 `alert-service` 容器（`API/alert_service/`）訂閱後依場域推播到 App（MQTT）與 Telegram／ntfy（`API/common/push_notify.py`）。觸控腳本身尚未在實機驗證
 - **UC4.5** — 新增的 `mqtt_topic_bridge.py` 會把 ESP32 的 doorbell/tamper 事件寫進 `audit_logs`，精神類似但沒有專屬資料結構/語意
 
 ## 維護、稽核與資料治理
@@ -88,7 +90,7 @@
 **備註**：
 
 - **UC5.1** — 新增 `API/maintenance_mode/maintenance_mode.py`（`POST /maintenance_mode`）：Admin 手動開啟/關閉裝置維修模式，開啟時**強制**要求 `duration_minutes`（不可省略、有系統上限，預設 240 分鐘），寫入 `devices.maintenance_mode`/`maintenance_expires_at`/`maintenance_reason`；`control_device.py` 在維修模式開啟期間會拒絕 lock/unlock 等日常控制指令（`DEVICE_IN_MAINTENANCE`），達成「暫停設備日常操作功能」；`api-mqtt-bridge` 新增背景 sweep 執行緒每分鐘檢查一次，時間到自動清除維修狀態並寫入稽核日誌，達成「時間到達後自動恢復」。仍有兩個落差沒做：(1)「對外開放受限的硬體診斷埠」是韌體/硬體層面的工作，需要實體 ESP32 才能設計與驗證，本次未實作；(2)「依設定條件觸發」（規則式自動觸發維修模式）需求未明確定義，本次只做 Admin 手動觸發
-- **UC5.2**、**UC5.4** ~ **UC5.6** — 沒有實作
+- **UC5.2**、**UC5.4** ~ **UC5.6** — API 端沒有實作。UC5.4（每戶加密的去識別化存證）與 UC5.5（帳本備份還原）在 `Eva0630/IOTA_cassette` 有 PoC，尚未整合進本 repo
 - **UC5.3** — `API/list_devices/list_devices.py` 只回傳最近的 `DEVICE_REGISTERED` 紀錄，沒有完整稽核日誌查詢 endpoint
 - **UC5.6** — UC.md 裡這條連負責人都是空的
 
