@@ -101,6 +101,10 @@ def main():
 
                 new_hash = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
                 cursor.execute("UPDATE users SET password_hash = %s WHERE user_id = %s", (new_hash, user_id))
+                # 管理員協助重設留下的「必須改密碼」旗標，改完就解除（舊 DB 沒有這個欄位就跳過）
+                cursor.execute("SHOW COLUMNS FROM users LIKE 'must_change_password'")
+                if cursor.fetchone() is not None:
+                    cursor.execute("UPDATE users SET must_change_password = 0 WHERE user_id = %s", (user_id,))
 
                 append_audit_log(
                     cursor,

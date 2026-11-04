@@ -163,6 +163,17 @@ String formatForApi(DateTime dt) {
       '${_two(utc.hour)}:${_two(utc.minute)}:00';
 }
 
+/// 格式化成帶 `Z` 的 ISO 8601 UTC 字串（`YYYY-MM-DDTHH:MM:00Z`）。
+///
+/// 給「把不帶時區的字串當台灣時間」的端點用（例如 `generate_guest_qr.py`
+/// 的 `parse_local_time()`）：對這類端點送 [formatForApi] 的 UTC naive 字串，
+/// 會被往前解讀 8 小時。明確帶 `Z`，後端就會照 UTC 換算，兩種解讀都不會錯。
+String formatIsoUtc(DateTime dt) {
+  final utc = dt.toUtc();
+  return '${utc.year}-${_two(utc.month)}-${_two(utc.day)}T'
+      '${_two(utc.hour)}:${_two(utc.minute)}:00Z';
+}
+
 /// 顯示用的時間格式。
 String formatDisplay(dynamic value, {String fallback = '未設定'}) {
   final dt = asDateTime(value);

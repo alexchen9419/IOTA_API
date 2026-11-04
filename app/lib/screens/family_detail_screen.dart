@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../theme/app_theme.dart';
 import '../utils/api_client.dart';
@@ -10,6 +11,7 @@ import '../widgets/device_admin_dialogs.dart';
 import '../widgets/device_card.dart';
 import '../widgets/device_control_sheet.dart';
 import '../widgets/empty_state.dart';
+import 'add_device_screen.dart';
 import 'dashboard_screen.dart';
 import 'guest_qr_screen.dart';
 
@@ -178,13 +180,18 @@ class _FamilyDetailScreenState extends State<FamilyDetailScreen>
     if (mounted) await _fetchDevices();
   }
 
+  /// 新增裝置頁：先用廣播配對自動找附近的鎖，找不到再改手動輸入 MAC。
   Future<void> _pairNewDevice() async {
-    final paired = await DeviceAdminDialogs.pairDevice(
-      context: context,
-      familyId: widget.familyId,
-      ownerUserId: widget.currentUserId,
+    final paired = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AddDeviceScreen(
+          familyId: widget.familyId,
+          ownerUserId: widget.currentUserId,
+        ),
+      ),
     );
-    if (paired) await _fetchDevices();
+    if (paired == true) await _fetchDevices();
   }
 
   // ------------------------------------------------------------------
@@ -618,6 +625,13 @@ class _FamilyDetailScreenState extends State<FamilyDetailScreen>
               ),
             ).then((_) => _fetchDevices()),
           ),
+          // 「配對裝置」FAB 只在設備分頁出現；AppBar 這顆在任何分頁都看得到。
+          if (_isAdmin)
+            IconButton(
+              tooltip: '新增裝置',
+              icon: const Icon(Icons.add_link),
+              onPressed: _pairNewDevice,
+            ),
           if (_isAdmin)
             IconButton(
               tooltip: '訪客授權 QR',
@@ -819,6 +833,15 @@ class _FamilyDetailScreenState extends State<FamilyDetailScreen>
               ],
             ),
           ),
+          // 忘記密碼由管理員協助重設。後端不允許重設任何管理員（避免跨場域接管），
+          // 這裡也只對一般成員顯示；後端仍會再檢查一次。
+          if (_isAdmin && !isSelf && !isRevoked && !isFamilyAdmin(role))
+            IconButton(
+              icon: Icon(Icons.key_outlined,
+                  color: AppColors.textTertiary, size: 20),
+              tooltip: '重設密碼',
+              onPressed: () => _confirmResetPassword(member),
+            ),
           // 不能編輯自己的權限（後端 update_member_role.py 也有自我撤權保護）。
           if (_isAdmin && !isSelf)
             IconButton(
@@ -827,6 +850,96 @@ class _FamilyDetailScreenState extends State<FamilyDetailScreen>
               tooltip: '編輯權限',
               onPressed: () => _showEditRoleDialog(member),
             ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _confirmResetPassword(Map<String, dynamic> member) async {
+    final targetUid = asText(member['user_id'], fallback: '');
+    if (targetUid.isEmpty) return;
+    final name = asText(member['username'], fallback: targetUid);
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('重設 $name 的密碼？'),
+        content: Text(
+          '對方目前的密碼會立即失效，系統會產生一組臨時密碼。'
+          '請確認是本人請你協助，再把臨時密碼交給對方；對方登入後需要設定新密碼。',
+          style: TextStyle(color: AppColors.textSecondary, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text('取消', style: TextStyle(color: AppColors.textTertiary)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.danger,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('重設密碼'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final result = await ApiClient.post(ApiEndpoints.adminResetPassword, {
+      'family_id': widget.familyId,
+      'admin_uid': widget.currentUserId,
+      'target_uid': targetUid,
+    });
+    if (!mounted) return;
+
+    final tempPassword = asText(result.dataMap['temp_password'], fallback: '');
+    if (!result.ok || tempPassword.isEmpty) {
+      AppFeedback.fromResult(context, result);
+      return;
+    }
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('臨時密碼'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '帳號 $targetUid 的臨時密碼如下，只會顯示這一次。'
+              '請直接交給本人，對方登入後需設定新密碼。',
+              style: TextStyle(color: AppColors.textSecondary, height: 1.5),
+            ),
+            const SizedBox(height: AppSpacing.md),
+            SelectableText(
+              tempPassword,
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+                fontFamily: 'monospace',
+                letterSpacing: 2,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: tempPassword));
+              if (mounted) AppFeedback.success(context, '已複製臨時密碼');
+            },
+            icon: const Icon(Icons.copy, size: 18),
+            label: const Text('複製'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('完成'),
+          ),
         ],
       ),
     );

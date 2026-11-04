@@ -384,6 +384,12 @@ def find_user_role_in_family(cur, user: Dict[str, Any], original_user_id: str, f
         status_clause = ""
         if "status" in cols:
             status_clause = " AND (`status` IS NULL OR LOWER(`status`) IN ('active','accepted','enabled','normal'))"
+        # 臨時成員（update_member_role 設的 start_time / end_time，存 UTC）只在有效期間內算數；
+        # 沒有這段，過期的臨時成員仍能直接呼叫 API 開鎖
+        if "start_time" in cols:
+            status_clause += " AND (`start_time` IS NULL OR `start_time` <= UTC_TIMESTAMP())"
+        if "end_time" in cols:
+            status_clause += " AND (`end_time` IS NULL OR `end_time` > UTC_TIMESTAMP())"
         for identifier in identifiers:
             cur.execute(
                 f"SELECT `{rcol}` AS role FROM `{table}` WHERE `{ucol}`=%s AND `{fcol}`=%s{status_clause} LIMIT 1",

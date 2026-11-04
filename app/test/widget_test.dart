@@ -52,6 +52,24 @@ void main() {
     test('正常值原樣', () => expect(asText('大門鎖'), '大門鎖'));
   });
 
+  group('formatIsoUtc', () {
+    // generate_guest_qr 把不帶時區的字串當台灣時間，必須送帶 Z 的 UTC。
+    test('UTC 輸入帶 Z 輸出，秒數歸零', () {
+      expect(formatIsoUtc(DateTime.utc(2026, 10, 28, 6, 30, 45)),
+          '2026-10-28T06:30:00Z');
+    });
+    test('本地時間會先轉成 UTC', () {
+      final local = DateTime(2026, 10, 28, 14, 30);
+      final utc = local.toUtc();
+      expect(formatIsoUtc(local), formatIsoUtc(utc));
+      expect(formatIsoUtc(local).endsWith('Z'), isTrue);
+    });
+    test('跟 asDateTime 來回一致', () {
+      final local = DateTime(2026, 10, 28, 14, 30);
+      expect(asDateTime(formatIsoUtc(local)), local);
+    });
+  });
+
   group('formatForApi', () {
     // 後端 DATETIME 欄位一律存 UTC（見 parsing.dart 的 asDateTime 註記）。
     // 送出去的字串必須是 UTC，否則使用者在本地時間選的時段會整整偏移一個時區。

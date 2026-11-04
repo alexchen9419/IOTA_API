@@ -130,6 +130,71 @@ class ApiClient {
     }
   }
 
+  /// 呼叫不走閘道慣例的 JSON 服務（mqtt-server 的配對端點）。
+  ///
+  /// 這些端點不回 `{"status": ...}` 包裝，也不讀 `{"payload": ...}`，所以只以
+  /// HTTP 狀態碼判斷成敗，整個 body 放在 [ApiResult.data] / [ApiResult.raw]。
+  static Future<ApiResult> rawJson(
+    Uri uri, {
+    String method = 'GET',
+    Map<String, dynamic>? body,
+  }) async {
+    try {
+      final http.Response response;
+      if (method == 'GET') {
+        response = await http.get(uri).timeout(timeout);
+      } else {
+        response = await http
+            .post(
+              uri,
+              headers: const {
+                'Content-Type': 'application/json; charset=utf-8',
+              },
+              body: json.encode(body ?? const {}),
+            )
+            .timeout(timeout);
+      }
+
+      Map<String, dynamic>? decoded;
+      try {
+        final value = json.decode(utf8.decode(response.bodyBytes));
+        if (value is Map<String, dynamic>) decoded = value;
+      } on FormatException {
+        decoded = null;
+      }
+
+      final status = response.statusCode;
+      final ok = status >= 200 && status < 300 && decoded != null;
+      return ApiResult(
+        ok: ok,
+        statusCode: status,
+        message: ok
+            ? '操作成功'
+            : (decoded?['error'] ?? decoded?['detail'] ?? '操作失敗（HTTP $status）')
+                .toString(),
+        kind: ok
+            ? ApiErrorKind.none
+            : (decoded == null ? ApiErrorKind.malformed : ApiErrorKind.business),
+        data: decoded,
+        raw: decoded,
+      );
+    } on TimeoutException {
+      return ApiResult(
+        ok: false,
+        statusCode: 0,
+        message: '連線逾時（${timeout.inSeconds} 秒），請確認 ${uri.authority} 上的服務正在執行。',
+        kind: ApiErrorKind.network,
+      );
+    } catch (e) {
+      return ApiResult(
+        ok: false,
+        statusCode: 0,
+        message: _networkMessage(e, uri),
+        kind: ApiErrorKind.network,
+      );
+    }
+  }
+
   static Future<ApiResult> _send(
     String endpoint, {
     required String method,
