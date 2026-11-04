@@ -29,3 +29,6 @@ ledger-backup-*/
 /.ledger.env
 /security-backup-*/
 /security-db-rotation.pending
+
+# UC1.3 provision 產生的 Gateway 私鑰與身分（API 目錄掛進容器，會寫到這裡）
+API/gateway_runtime/
