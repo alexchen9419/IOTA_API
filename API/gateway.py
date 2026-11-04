@@ -32,6 +32,7 @@ ROUTES: dict[str, tuple[str, tuple[str, ...]]] = {
     "login": ("login/login.py", ("POST",)),
     "register": ("register/register.py", ("POST",)),
     "change_password": ("change_password/change_password.py", ("POST",)),
+    "admin_reset_password": ("admin_reset_password/admin_reset_password.py", ("POST",)),
     "create_family": ("create_family/create_family.py", ("POST",)),
     "get_user_families": ("get_user_families/get_user_families.py", ("GET", "POST")),
     "get_family_members": ("get_family_members/get_family_members.py", ("GET", "POST")),

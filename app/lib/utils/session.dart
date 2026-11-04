@@ -34,6 +34,16 @@ class Session {
 
   static String get username => (_current?['username'] ?? '').toString();
 
+  /// 管理員協助重設後用臨時密碼登入：必須先改密碼才能進主畫面。
+  static bool get mustChangePassword => _current?['must_change_password'] == true;
+
+  /// 改完密碼後清掉旗標，下次啟動才不會又被擋在改密碼畫面。
+  static Future<void> markPasswordChanged() async {
+    final current = _current;
+    if (current == null) return;
+    await save(Map<String, dynamic>.from(current)..['must_change_password'] = false);
+  }
+
   /// 在 `runApp()` 之前呼叫，把上次登入的身分讀回來。
   static Future<void> restore() async {
     final prefs = await SharedPreferences.getInstance();

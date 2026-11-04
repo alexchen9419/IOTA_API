@@ -8,6 +8,7 @@ import '../utils/parsing.dart';
 import '../utils/session.dart';
 import '../widgets/app_text_field.dart';
 import '../widgets/empty_state.dart';
+import 'change_password_screen.dart';
 import 'family_detail_screen.dart';
 import 'login_screen.dart';
 import 'server_settings_screen.dart';
@@ -369,6 +370,16 @@ class _FamilyListScreenState extends State<FamilyListScreen> {
             ),
             icon: Icon(Icons.dns_outlined, color: AppColors.textTertiary),
             tooltip: '伺服器設定',
+          ),
+          IconButton(
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => ChangePasswordScreen(userId: _userId),
+              ),
+            ),
+            icon: Icon(Icons.lock_reset, color: AppColors.textTertiary),
+            tooltip: '修改密碼',
           ),
           IconButton(
             onPressed: _handleLogout,

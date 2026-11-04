@@ -7,6 +7,7 @@ import '../utils/app_feedback.dart';
 import '../utils/session.dart';
 import '../widgets/app_logo.dart';
 import '../widgets/app_text_field.dart';
+import 'change_password_screen.dart';
 import 'family_list_screen.dart';
 import 'register_screen.dart';
 import 'server_settings_screen.dart';
@@ -92,12 +93,48 @@ class _LoginScreenState extends State<LoginScreen>
     await Session.save(result.dataMap);
     if (!mounted) return;
 
+    // 管理員協助重設後，用臨時密碼登入要先設定新密碼，不能直接進主畫面。
+    if (Session.mustChangePassword) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) =>
+              ChangePasswordScreen(userId: Session.userId, forced: true),
+        ),
+      );
+      return;
+    }
+
     // 舊版登入成功會先跳一個 AlertDialog 列出家庭清單，按「好的」才進主畫面。
     // 那些資訊下一頁本來就看得到，這裡直接進去少一次點擊。
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
         builder: (_) => FamilyListScreen(userData: result.dataMap),
+      ),
+    );
+  }
+
+  /// 後端沒有自助重設（沒有寄信機制），忘記密碼請場域管理員協助。
+  void _showForgotPassword() {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('忘記密碼'),
+        content: Text(
+          '請聯絡你所在場域的管理員：\n\n'
+          '1. 管理員在 App 的場域「成員清單」找到你，按「重設密碼」\n'
+          '2. 管理員把畫面上的臨時密碼交給你\n'
+          '3. 你用帳號和臨時密碼登入，系統會要求設定新密碼\n\n'
+          '如果你本身是管理員，請聯絡系統維運人員協助。',
+          style: TextStyle(color: AppColors.textSecondary, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('知道了'),
+          ),
+        ],
       ),
     );
   }
@@ -244,7 +281,20 @@ class _LoginScreenState extends State<LoginScreen>
                                     ? '請輸入密碼'
                                     : null,
                           ),
-                          const SizedBox(height: 36),
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: TextButton(
+                              onPressed: _isLoading ? null : _showForgotPassword,
+                              child: Text(
+                                '忘記密碼？',
+                                style: TextStyle(
+                                  color: AppColors.textTertiary,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 20),
                           AppPrimaryButton(
                             label: '立即登入',
                             icon: Icons.arrow_forward_rounded,

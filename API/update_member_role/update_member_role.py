@@ -32,7 +32,6 @@ DB_USER = os.getenv('DB_USER', 'vboxuser')
 DB_PASS = os.getenv('DB_PASS')
 DB_NAME = os.getenv('DB_NAME', 'devicemanagement')
 MQTT_HOST = os.getenv('MQTT_HOST', 'localhost')
-LOCAL_TZ = dt.timezone(dt.timedelta(hours=8))
 
 # 確保標準輸入輸出使用 UTF-8 編碼，防止中文亂碼
 sys.stdin.reconfigure(encoding='utf-8')
@@ -63,8 +62,9 @@ def _revocation_dedup_key(family_id, target_uid, end_time):
     return f"UC3.3:MEMBER_PERMISSION_REVOKED:FAMILY:{int(family_id)}:MEMBER:{member_hash}:AT:{stamp}"
 
 
-def _ledger_local_time(value):
-    return iso_utc(value.replace(tzinfo=LOCAL_TZ)) if value is not None else iso_utc()
+def _ledger_db_time(value):
+    # DB 的 DATETIME 是 UTC naive（MySQL 容器沒設時區，NOW() 就是 UTC）
+    return iso_utc(value.replace(tzinfo=dt.timezone.utc)) if value is not None else iso_utc()
 
 
 def _publish_role_sync(family_id, target_uid, role, start_time, end_time, max_uses):
@@ -221,7 +221,7 @@ def main():
                     )
                     revoked_row = cursor.fetchone() or {}
                     revoked_at_db = revoked_row.get('end_time')
-                    revoked_at = _ledger_local_time(revoked_at_db)
+                    revoked_at = _ledger_db_time(revoked_at_db)
                     gateway_id = resolve_gateway_id(cursor, family_id=int(family_id))
                     dedup_key = (f'UC3.5:GUEST_TOKEN_REVOKED:GRANT:{grant_id}' if is_guest else
                                  _revocation_dedup_key(family_id, target_uid, revoked_at_db or revoked_at))
@@ -318,7 +318,9 @@ def main():
                             if value in (None, ''):
                                 return None
                             parsed = dt.datetime.fromisoformat(str(value).replace('Z', '+00:00'))
-                            return iso_utc(parsed.replace(tzinfo=LOCAL_TZ) if parsed.tzinfo is None else parsed)
+                            # user_families 的時間跟 guest_tokens 一樣存 UTC naive（App 送 UTC、
+                            # 撤銷時寫 NOW() 也是 UTC），不能當成台灣時間，否則上鏈的期限會早 8 小時
+                            return iso_utc(parsed.replace(tzinfo=dt.timezone.utc) if parsed.tzinfo is None else parsed)
                         audit = append_audit_log(
                             cursor, actor_id=admin_uid, actor_type='USER', family_id=family_id,
                             device_id=None, action='UC3.4_GUEST_TOKEN_ISSUED',

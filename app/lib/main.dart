@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'screens/change_password_screen.dart';
 import 'screens/family_list_screen.dart';
 import 'screens/login_screen.dart';
 import 'theme/app_theme.dart';
@@ -31,9 +32,12 @@ class IotaApp extends StatelessWidget {
       theme: AppTheme.dark,
       darkTheme: AppTheme.dark,
       themeMode: ThemeMode.dark,
-      home: Session.isLoggedIn
-          ? FamilyListScreen(userData: Session.current!)
-          : const LoginScreen(),
+      home: !Session.isLoggedIn
+          ? const LoginScreen()
+          // 用臨時密碼登入後還沒改密碼就關掉 App：重開仍要先設定新密碼。
+          : Session.mustChangePassword
+              ? ChangePasswordScreen(userId: Session.userId, forced: true)
+              : FamilyListScreen(userData: Session.current!),
     );
   }
 }

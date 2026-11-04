@@ -39,3 +39,6 @@ node-red-data/.config.runtime.json
 node-red-data/.config.users.json
 node-red-data/flows_cred.json
 node-red-data/.*.backup
+
+# UC1.3 provision 產生的 Gateway 私鑰與身分（API 目錄掛進容器，會寫到這裡）
+API/gateway_runtime/

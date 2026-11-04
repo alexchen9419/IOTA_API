@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS users (
   phone_number  VARCHAR(32),
   password_hash VARCHAR(255) NOT NULL,
   status        VARCHAR(32) NOT NULL DEFAULT 'Active',
+  -- 管理員協助重設密碼後設為 1，使用者用臨時密碼登入時 App 會強制改密碼；改完歸 0
+  must_change_password TINYINT(1) NOT NULL DEFAULT 0,
   created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
