@@ -39,7 +39,6 @@ import json
 from common.safe_error import public_detail
 import os
 import sys
-import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -54,6 +53,7 @@ API_ROOT = Path(__file__).resolve().parents[1]
 if str(API_ROOT) not in sys.path:
     sys.path.insert(0, str(API_ROOT))
 
+from common.audit_log_service import append_audit_log as shared_append_audit_log
 from common.ledger_event_service import enqueue_ledger_event, hash_identifier, iso_utc
 
 # 讀取 .env 檔案中的 MySQL 連線設定。
@@ -115,8 +115,17 @@ def public_key_to_pem(public_key) -> str:
 def load_public_key_from_pem(pem: str):
     """
     將 PEM 格式的 public key 字串還原成 cryptography 可使用的 public key 物件。
+
+    main() 會把 ValueError 的訊息直接回給 App（400），所以這裡把 cryptography
+    函式庫的原始錯誤訊息換成固定的中文說明，不外洩函式庫內部細節。
     """
-    return serialization.load_pem_public_key(pem.encode("utf-8"))
+    try:
+        public_key = serialization.load_pem_public_key(str(pem).encode("utf-8"))
+    except Exception:
+        raise ValueError("device_public_key_pem 格式錯誤，無法解析為公鑰") from None
+    if not isinstance(public_key, ec.EllipticCurvePublicKey) or public_key.curve.name != "secp256r1":
+        raise ValueError("device_public_key_pem 必須是 SECP256R1 (P-256) 公鑰")
+    return public_key
 
 
 def derive_session_key(shared_secret: bytes, device_id: str, gateway_id: str) -> bytes:
@@ -263,73 +272,28 @@ def upsert_device_credential(
     return credential_id
 
 
-def get_prev_hash(cursor) -> Optional[str]:
-    """
-    取得 audit_logs 中最新一筆 current_hash。
-
-    新日誌會把這個值存進 prev_hash，形成鏈式結構：
-    前一筆 current_hash → 下一筆 prev_hash。
-    """
-    cursor.execute("SELECT current_hash FROM audit_logs ORDER BY timestamp DESC, command_id DESC LIMIT 1")
-    row = cursor.fetchone()
-    return row["current_hash"] if row and row.get("current_hash") else None
-
-
-def append_audit_log(cursor, owner_user_id: str, u_id: Optional[int], device_id: str, parameters: Dict[str, Any]) -> Dict[str, str]:
+def append_audit_log(cursor, owner_user_id: str, u_id: Optional[int], device_id: str,
+                     parameters: Dict[str, Any], family_id: Optional[int] = None) -> Dict[str, str]:
     """
     將 UC2.1 裝置註冊事件寫入 audit_logs。
 
-    這裡用簡化版 hash chain 模擬「公有鏈稽核紀錄」：
-    - prev_hash：上一筆日誌的 current_hash。
-    - current_hash：把本筆交易內容排序後做 SHA-256。
-
-    若未來要改成真正 IOTA 或區塊鏈節點，可從這個函式替換底層寫入方式。
+    雜湊鏈（prev_hash → current_hash）的計算與鏈頭加鎖統一交給
+    common.audit_log_service，與 devices / device_credentials / ledger_events
+    共用同一 cursor / transaction；這裡只保留 UC2.1 的 command_id 格式與回應格式。
     """
-    command_id = f"tx-{uuid.uuid4().hex}"
-    timestamp = int(time.time())
-    prev_hash = get_prev_hash(cursor)
-
-    # current_hash 的來源資料。
-    # sort_keys=True 可以確保相同內容每次產生一致的 JSON 字串，避免 hash 因欄位順序不同而改變。
-    hash_payload = {
-        "command_id": command_id,
-        "user_id": owner_user_id,
-        "u_id": u_id,
-        "device_id": device_id,
-        "action": "DEVICE_REGISTERED",
-        "parameters": parameters,
-        "status": "Verified",
-        "timestamp": timestamp,
-        "prev_hash": prev_hash,
-    }
-    current_hash = hashlib.sha256(
-        json.dumps(hash_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()
-
-    # 將交易紀錄寫入 audit_logs。
-    # parameters 使用 MySQL JSON 欄位，因此透過 CAST(%s AS JSON) 寫入。
-    cursor.execute(
-        """
-        INSERT INTO audit_logs
-          (command_id, user_id, u_id, device_id, action, parameters, status, timestamp, prev_hash, current_hash)
-        VALUES
-          (%s, %s, %s, %s, %s, CAST(%s AS JSON), %s, %s, %s, %s)
-        """,
-        (
-            command_id,
-            owner_user_id,
-            u_id,
-            device_id,
-            "DEVICE_REGISTERED",
-            json.dumps(parameters, ensure_ascii=False),
-            "Verified",
-            timestamp,
-            prev_hash,
-            current_hash,
-        ),
+    audit = shared_append_audit_log(
+        cursor,
+        command_id=f"tx-{uuid.uuid4().hex}",
+        actor_id=owner_user_id,
+        actor_type="USER",
+        u_id=u_id,
+        family_id=family_id,
+        device_id=device_id,
+        action="DEVICE_REGISTERED",
+        parameters=parameters,
+        status="Verified",
     )
-
-    return {"command_id": command_id, "prev_hash": prev_hash, "current_hash": current_hash}
+    return {"command_id": audit["command_id"], "prev_hash": audit["prev_hash"], "current_hash": audit["current_hash"]}
 
 
 def main() -> None:
@@ -477,7 +441,7 @@ def main() -> None:
                 }
 
                 # 寫入 UC2.1 本機稽核紀錄。
-                tx = append_audit_log(cursor, owner_user_id, u_id, device_id, audit_parameters)
+                tx = append_audit_log(cursor, owner_user_id, u_id, device_id, audit_parameters, family_id=family_id)
 
                 ledger_payload = {
                     "device_type": device_type.upper(),
@@ -552,6 +516,9 @@ def main() -> None:
 
     except json.JSONDecodeError:
         response_json({"status": "Error", "msg": "JSON 格式錯誤"}, 400)
+    # PermissionError / ValueError 只來自本檔自行 raise 的固定中文驗證訊息
+    # （resolve_family_id、require_family_admin、load_public_key_from_pem），可直接回給 App；
+    # 其他未預期例外走下方 public_detail，不外洩細節。
     except PermissionError as e:
         response_json({"status": "Error", "msg": str(e)}, 403)
     except ValueError as e:

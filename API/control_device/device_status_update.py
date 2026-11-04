@@ -22,8 +22,8 @@ Input:
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import json
+from common.audit_log_service import append_audit_log
 from common.safe_error import public_detail
 import os
 import sys
@@ -147,57 +147,26 @@ def update_dynamic(cur, table: str, data: Dict[str, Any], where_sql: str, where_
     return int(getattr(cur, "rowcount", 0) or 0)
 
 
-def audit_timestamp_value(cur) -> Any:
-    t = get_column_types(cur, "audit_logs").get("timestamp", "")
-    return unix_now() if any(x in t for x in ["int", "bigint", "decimal", "double", "float"]) else now_utc()
-
-
-def get_prev_hash(cur) -> str:
-    cols = get_columns(cur, "audit_logs")
-    if not cols:
-        return "0" * 64
-    hash_col = "current_hash" if "current_hash" in cols else ("hash" if "hash" in cols else None)
-    if not hash_col:
-        return "0" * 64
-    order_col = "id" if "id" in cols else ("log_id" if "log_id" in cols else ("timestamp" if "timestamp" in cols else hash_col))
-    try:
-        cur.execute(f"SELECT `{hash_col}` AS h FROM `audit_logs` WHERE `{hash_col}` IS NOT NULL ORDER BY `{order_col}` DESC LIMIT 1")
-        row = fetchone(cur)
-        return str(row.get("h")) if row and row.get("h") else "0" * 64
-    except Exception:
-        return "0" * 64
-
-
 def write_audit(cur, payload: Dict[str, Any], status: str, decision: str, reason: str) -> None:
+    # 統一走 common.audit_log_service（同一 cursor / transaction、鏈頭加鎖）。
+    # 裝置回報的 payload 是主要證據，hash_raw_data=True 讓它納入 current_hash。
     if not table_exists(cur, "audit_logs"):
         return
-    prev_hash = get_prev_hash(cur)
-    created_at = now_utc()
-    command_id = str(payload.get("command_id") or "")
-    family_id = payload.get("family_id")
-    device_id = str(payload.get("device_id") or "")
-    raw_text = to_json_text(payload)
-    base = f"{prev_hash}|{created_at.isoformat()}|{command_id}|{family_id}|{device_id}|DEVICE_STATUS|{status}|{decision}|{reason}|{raw_text}"
-    current_hash = hashlib.sha256(base.encode("utf-8")).hexdigest()
-    insert_dynamic(cur, "audit_logs", {
-        "command_id": command_id,
-        "user_id": "ESP32",
-        "actor_id": "ESP32",
-        "actor_type": "DEVICE",
-        "family_id": family_id,
-        "device_id": device_id,
-        "action": "DEVICE_STATUS_UPDATE",
-        "parameters": to_json_text({}),
-        "raw_data": raw_text,
-        "status": status,
-        "decision": decision,
-        "reason": reason,
-        "prev_hash": prev_hash,
-        "current_hash": current_hash,
-        "hash": current_hash,
-        "timestamp": audit_timestamp_value(cur),
-        "created_at": created_at,
-    })
+    append_audit_log(
+        cur,
+        command_id=str(payload.get("command_id") or "") or None,
+        actor_id="ESP32",
+        actor_type="DEVICE",
+        family_id=payload.get("family_id"),
+        device_id=str(payload.get("device_id") or ""),
+        action="DEVICE_STATUS_UPDATE",
+        parameters={},
+        status=status,
+        decision=decision,
+        reason=reason,
+        raw_data=payload,
+        hash_raw_data=True,
+    )
 
 
 def normalize_status(value: Any) -> str:

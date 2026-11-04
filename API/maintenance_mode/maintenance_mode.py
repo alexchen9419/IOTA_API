@@ -41,8 +41,8 @@ GET 查詢目前狀態（查詢時若已過期會順便自動清除，等同 swe
 /maintenance_mode?device_id=E8:31:CD:82:80:C8
 """
 
-import hashlib
 import json
+from common.audit_log_service import append_audit_log as shared_append_audit_log
 from common.safe_error import public_detail
 import os
 import sys
@@ -80,39 +80,17 @@ def get_conn():
     )
 
 
-def get_prev_hash(cursor) -> str:
-    cursor.execute("SELECT current_hash FROM audit_logs ORDER BY id DESC LIMIT 1")
-    row = cursor.fetchone()
-    return row["current_hash"] if row and row.get("current_hash") else "0" * 64
-
-
 def append_audit_log(cursor, *, actor_id: str, device_id: str, family_id: int,
                       action: str, status: str, decision: str, reason: str,
                       parameters: Dict[str, Any]) -> Dict[str, str]:
-    command_id = f"MTN_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-    timestamp = int(time.time())
-    prev_hash = get_prev_hash(cursor)
-    hash_payload = {
-        "command_id": command_id, "actor_id": actor_id, "device_id": device_id,
-        "family_id": family_id, "action": action, "parameters": parameters,
-        "status": status, "timestamp": timestamp, "prev_hash": prev_hash,
-    }
-    current_hash = hashlib.sha256(
-        json.dumps(hash_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()
-    cursor.execute(
-        """
-        INSERT INTO audit_logs
-          (command_id, actor_id, actor_type, user_id, device_id, family_id, action,
-           parameters, status, decision, reason, prev_hash, current_hash, hash, timestamp)
-        VALUES
-          (%s, %s, 'USER', %s, %s, %s, %s, CAST(%s AS JSON), %s, %s, %s, %s, %s, %s, %s)
-        """,
-        (command_id, actor_id, actor_id, device_id, family_id, action,
-         json.dumps(parameters, ensure_ascii=False), status, decision, reason,
-         prev_hash, current_hash, current_hash, timestamp),
+    # 雜湊計算與鏈頭加鎖統一交給 common.audit_log_service（同一 cursor / transaction）。
+    audit = shared_append_audit_log(
+        cursor,
+        command_id=f"MTN_{int(time.time())}_{uuid.uuid4().hex[:8]}",
+        actor_id=actor_id, actor_type="USER", family_id=family_id, device_id=device_id,
+        action=action, parameters=parameters, status=status, decision=decision, reason=reason,
     )
-    return {"command_id": command_id, "prev_hash": prev_hash, "current_hash": current_hash}
+    return {"command_id": audit["command_id"], "prev_hash": audit["prev_hash"], "current_hash": audit["current_hash"]}
 
 
 def require_admin(cursor, family_id: int, admin_uid: str) -> None:

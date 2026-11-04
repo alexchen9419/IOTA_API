@@ -31,7 +31,6 @@ Run as its own long-lived process (see docker-compose service api-mqtt-bridge).
 from __future__ import annotations
 
 import datetime
-import hashlib
 import json
 import os
 import signal
@@ -45,6 +44,8 @@ import pymysql
 import paho.mqtt.client as mqtt
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # API/，讓 common.* 不靠 PYTHONPATH 也找得到
+from common.audit_log_service import append_audit_log  # noqa: E402
 import device_status_update  # existing, unmodified API module
 import mqtt_tls
 
@@ -96,28 +97,20 @@ def write_event_audit(device_id: str, family_id: Optional[int], event_type: str)
         conn = get_db_connection()
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT current_hash FROM audit_logs ORDER BY id DESC LIMIT 1")
-                row = cur.fetchone()
-                prev_hash = row["current_hash"] if row and row.get("current_hash") else "0" * 64
-                timestamp = int(time.time())
-                command_id = f"EVT_{timestamp}_{device_id}"
-                raw = json.dumps({
-                    "command_id": command_id, "device_id": device_id, "family_id": family_id,
-                    "action": "DEVICE_EVENT", "event_type": event_type, "timestamp": timestamp,
-                    "prev_hash": prev_hash,
-                }, sort_keys=True)
-                current_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-                cur.execute(
-                    """
-                    INSERT INTO audit_logs
-                      (command_id, actor_id, actor_type, device_id, family_id, action,
-                       parameters, status, decision, reason, prev_hash, current_hash, hash, timestamp)
-                    VALUES (%s, %s, 'DEVICE', %s, %s, 'DEVICE_EVENT', CAST(%s AS JSON),
-                            'SUCCEEDED', 'ALLOW', %s, %s, %s, %s, %s)
-                    """,
-                    (command_id, device_id, device_id, family_id,
-                     json.dumps({"event_type": event_type}), event_type, prev_hash,
-                     current_hash, current_hash, timestamp),
+                # 統一走 common.audit_log_service：鏈頭加鎖 + 同一 transaction，commit 才放鎖。
+                append_audit_log(
+                    cur,
+                    command_id=f"EVT_{int(time.time())}_{device_id}",
+                    actor_id=device_id,
+                    actor_type="DEVICE",
+                    user_id=None,
+                    family_id=family_id,
+                    device_id=device_id,
+                    action="DEVICE_EVENT",
+                    parameters={"event_type": event_type},
+                    status="SUCCEEDED",
+                    decision="ALLOW",
+                    reason=event_type,
                 )
             conn.commit()
         finally:
@@ -152,28 +145,19 @@ def sweep_expired_maintenance() -> None:
                         """,
                         (device_id,),
                     )
-                    cur.execute("SELECT current_hash FROM audit_logs ORDER BY id DESC LIMIT 1")
-                    prev_row = cur.fetchone()
-                    prev_hash = prev_row["current_hash"] if prev_row and prev_row.get("current_hash") else "0" * 64
-                    timestamp = int(time.time())
-                    command_id = f"MTN_AUTO_{timestamp}_{device_id}"
-                    raw = json.dumps({
-                        "command_id": command_id, "device_id": device_id, "family_id": family_id,
-                        "action": "MAINTENANCE_MODE_AUTO_EXPIRED", "timestamp": timestamp,
-                        "prev_hash": prev_hash,
-                    }, sort_keys=True)
-                    current_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-                    cur.execute(
-                        """
-                        INSERT INTO audit_logs
-                          (command_id, actor_id, actor_type, device_id, family_id, action,
-                           parameters, status, decision, reason, prev_hash, current_hash, hash, timestamp)
-                        VALUES (%s, %s, 'SYSTEM', %s, %s, 'MAINTENANCE_MODE_AUTO_EXPIRED', CAST(%s AS JSON),
-                                'Restored', 'ALLOW', %s, %s, %s, %s, %s)
-                        """,
-                        (command_id, "mqtt_topic_bridge", device_id, family_id,
-                         json.dumps({}), "MAINTENANCE_WINDOW_EXPIRED", prev_hash,
-                         current_hash, current_hash, timestamp),
+                    append_audit_log(
+                        cur,
+                        command_id=f"MTN_AUTO_{int(time.time())}_{device_id}",
+                        actor_id="mqtt_topic_bridge",
+                        actor_type="SYSTEM",
+                        user_id=None,
+                        family_id=family_id,
+                        device_id=device_id,
+                        action="MAINTENANCE_MODE_AUTO_EXPIRED",
+                        parameters={},
+                        status="Restored",
+                        decision="ALLOW",
+                        reason="MAINTENANCE_WINDOW_EXPIRED",
                     )
                     print(f"[bridge] maintenance window expired for {device_id}, auto-restored")
             conn.commit()

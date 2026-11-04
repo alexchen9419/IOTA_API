@@ -28,8 +28,8 @@ Input example:
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import json
+from common.audit_log_service import append_audit_log
 from common.safe_error import public_detail
 import os
 import secrets
@@ -215,14 +215,6 @@ def unix_now() -> int:
     return int(dt.datetime.now(dt.timezone.utc).timestamp())
 
 
-def audit_timestamp_value(cur) -> Any:
-    types = get_column_types(cur, "audit_logs")
-    t = types.get("timestamp", "")
-    if any(x in t for x in ["int", "bigint", "decimal", "double", "float"]):
-        return unix_now()
-    return now_utc()
-
-
 def parse_datetime_or_none(value: Any) -> Optional[dt.datetime]:
     if value in (None, ""):
         return None
@@ -388,24 +380,6 @@ def build_audit_id(prefix: str = "DASH") -> str:
     return f"{prefix}_{now_utc().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(4)}"
 
 
-def get_prev_hash(cur) -> str:
-    cols = get_columns(cur, "audit_logs")
-    if not cols:
-        return "0" * 64
-    hash_col = "current_hash" if "current_hash" in cols else ("hash" if "hash" in cols else None)
-    if not hash_col:
-        return "0" * 64
-    order_col = "id" if "id" in cols else ("log_id" if "log_id" in cols else ("timestamp" if "timestamp" in cols else hash_col))
-    try:
-        cur.execute(f"SELECT `{hash_col}` AS h FROM `audit_logs` WHERE `{hash_col}` IS NOT NULL ORDER BY `{order_col}` DESC LIMIT 1")
-        row = fetchone(cur)
-        if row and row.get("h"):
-            return str(row["h"])
-    except Exception:
-        pass
-    return "0" * 64
-
-
 def write_dashboard_audit(
     cur,
     *,
@@ -421,8 +395,6 @@ def write_dashboard_audit(
 ) -> None:
     if not table_exists(cur, "audit_logs"):
         return
-    prev_hash = get_prev_hash(cur)
-    event_time = now_utc()
     raw_data = {
         "request": {
             "auth_type": payload.get("auth_type", "user"),
@@ -433,29 +405,25 @@ def write_dashboard_audit(
         },
         "result_summary": result_summary or {},
     }
-    raw_text = to_json_text(raw_data)
     actor_id = user_id or str(payload.get("user_id") or "unknown")
-    hash_base = f"{prev_hash}|{event_time.isoformat()}|{audit_id}|{family_id}|{actor_id}|USER|DASHBOARD_VIEWED|{status}|{decision}|{reason}|{raw_text}"
-    current_hash = hashlib.sha256(hash_base.encode("utf-8")).hexdigest()
-    insert_dynamic(cur, "audit_logs", {
-        "command_id": audit_id,
-        "user_id": user_id,
-        "u_id": u_id,
-        "actor_id": actor_id,
-        "actor_type": "USER",
-        "device_id": None,
-        "family_id": family_id,
-        "action": "DASHBOARD_VIEWED",
-        "parameters": to_json_text({"include_history": payload.get("include_history", False), "history_limit": payload.get("history_limit")}),
-        "raw_data": raw_text,
-        "status": status,
-        "decision": decision,
-        "reason": reason,
-        "prev_hash": prev_hash,
-        "current_hash": current_hash,
-        "hash": current_hash,
-        "timestamp": audit_timestamp_value(cur),
-    })
+    # 統一走 common.audit_log_service（同一 cursor / transaction、鏈頭加鎖）。
+    append_audit_log(
+        cur,
+        command_id=audit_id,
+        actor_id=actor_id,
+        actor_type="USER",
+        user_id=user_id,
+        u_id=u_id,
+        family_id=family_id,
+        device_id=None,
+        action="DASHBOARD_VIEWED",
+        parameters={"include_history": payload.get("include_history", False), "history_limit": payload.get("history_limit")},
+        status=status,
+        decision=decision,
+        reason=reason,
+        raw_data=raw_data,
+        hash_raw_data=True,
+    )
 
 
 # ---------------------------------------------------------------------------

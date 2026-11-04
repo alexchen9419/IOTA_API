@@ -26,7 +26,11 @@
 | status | string | false | 預設 Verified |
 | decision | string | false | 預設 ALLOW；服務不自行做政策判定 |
 | reason | string / None | false | 預設 None |
-| raw_data | dict / None | false | 省略時用 parameters；會寫 DB 支援的 raw_data 欄位，但不在 current_hash 的 hash_material 中 |
+| raw_data | dict / None | false | 省略時用 parameters；會寫 DB 支援的 raw_data 欄位；預設不在 hash_material 中 |
+| command_id | string / None | false | 保留各端點自己的 id 格式（如 `tx-…`、`MTN_…`、控制指令 id）；省略時 `AUDIT_<uuid>` |
+| user_id | string / None | false | 寫入 `user_id` 欄位；省略時同 actor_id（可明確傳 None） |
+| u_id | integer / None | false | users.id；有給時寫入 `u_id` 並加入 hash_material |
+| hash_raw_data | bool | false | 預設 False；True 時 raw_data 也加入 hash_material（控制指令、裝置回報、儀表板用） |
 
 ## Python → 共用服務 Request Packet
 
@@ -50,10 +54,10 @@ with conn.cursor() as cursor:
 | 編號 | 規則 |
 | --- | --- |
 | 1 | SHOW COLUMNS audit_logs 取得支援欄位與 timestamp 型別。 |
-| 2 | previous hash 優先使用 current_hash，否則 hash；依 id、timestamp 或 hash 欄位排序查最新非空 hash。 |
+| 2 | 若有 `audit_chain_lock` 表，先 `SELECT … WHERE id=1 FOR UPDATE` 鎖住鏈（直到呼叫端 commit / rollback）；再以 `SELECT … ORDER BY id DESC LIMIT 1 FOR UPDATE` 讀最新非空 current_hash（無則 hash）。 |
 | 3 | 無前一筆或不支援 hash 欄位時 prev_hash 為 64 個 0。 |
 | 4 | 產生 AUDIT_<uuid> command_id；timestamp 為 UTC datetime，若資料表欄位是數值型別則用 epoch 秒。 |
-| 5 | hash_material 包含 command_id、actor_id/type、family_id、device_id、action、parameters、status、decision、reason、str(timestamp)、prev_hash。 |
+| 5 | hash_material 包含 command_id、actor_id/type、family_id、device_id、action、parameters、status、decision、reason、str(timestamp)、prev_hash；有給 u_id 才加 u_id，hash_raw_data=True 才加 raw_data（不傳這兩項時與舊版公式完全相同）。 |
 | 6 | 以排序、緊湊 JSON（default=str）計算 SHA-256 current_hash；raw_data 本身不在 hash_material。 |
 | 7 | 動態 INSERT schema 已有欄位；current_hash 也對應舊版 hash 欄位；parameters/raw_data 寫 JSON 字串。 |
 | 8 | 不查角色、不阻擋未授權操作、不去重；每次呼叫會寫新稽核。 |
@@ -89,9 +93,10 @@ with conn.cursor() as cursor:
 
 ## 注意事項
 
-- 此 writer 與 device_pair.py、decommission_device.py、gateway_init_common.py 的本地同名 writer 簽名不同；參數與回應格式不能直接互換。
+- 2026-10-28 起所有寫 audit_logs 的端點（control_device、device_status_update、mqtt_topic_bridge、dashboard、decommission、device_pair、gateway_common、gateway_init_common、maintenance_mode、ota_update）都改呼叫本模組；各檔保留的同名 wrapper 只負責自己的 command_id 格式與回應格式，參數簽名彼此不同。
 - 模組不自動移除敏感資料；parameters / raw_data / reason 請由呼叫端限制，不傳明文憑證。
 - Hash chain 是本地稽核資料，不代表已提交 IOTA。
-- 此模組沒有鎖定或序列化所有 audit 寫入，併發交易可能讀到相同 prev_hash；不能宣稱全域鏈式稽核已保證無分叉。
-- 不驗證既有鏈、不檢查 metadata 完整性，也沒有自動重試或去重。
+- 併發：`audit_chain_lock` 列鎖把所有 append 序列化到 commit 為止，避免兩個交易讀到同一 prev_hash 而分叉。舊 DB 沒有這張表時只剩鏈頭的 FOR UPDATE，在 REPEATABLE READ 下仍不會分叉，但並發時可能 deadlock 讓其中一個請求失敗；請跑 `API/migrations/2026-10-28_audit_chain_lock.sql`。
+- 呼叫端必須 autocommit=False 並在同一 transaction 內完成業務寫入後 commit，鎖才有意義；鎖持有到 commit，append 之後不要做長時間 I/O。
+- `verify_chain_links(rows)` 只檢查 prev_hash 銜接（舊公式與新公式的列可混合驗證）；歷史列由各檔舊公式產生且沒有公式版本欄位，無法逐列重算內容 hash。單元測試：`python -I tools/audit_chain_test.py`。
 - 共用 module 不擁有交易，與 Ledger 和業務資料使用相同 conn / cursor。

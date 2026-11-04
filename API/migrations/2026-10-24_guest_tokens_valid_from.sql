@@ -3,7 +3,7 @@
 -- 可重複執行：欄位已存在就什麼都不做（MySQL 8.0 沒有 ADD COLUMN IF NOT EXISTS）。
 --
 -- 執行：
---   docker exec -i iot_mysql mysql -uroot -pdevroot123 devicemanagement < API/migrations/2026-10-24_guest_tokens_valid_from.sql
+--   docker exec -i iot_mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" devicemanagement' < API/migrations/2026-10-24_guest_tokens_valid_from.sql
 
 SET @col_exists := (
   SELECT COUNT(*) FROM information_schema.COLUMNS

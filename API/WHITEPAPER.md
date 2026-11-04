@@ -17,6 +17,7 @@
 9. [稽核日誌與雜湊鏈](#9-稽核日誌與雜湊鏈)
 10. [部署與環境變數](#10-部署與環境變數)
 11. [已知限制與待辦](#11-已知限制與待辦)
+12. [後續新增模組（10 月）](#12-後續新增模組10-月)
 
 ---
 
@@ -498,8 +499,38 @@ curl -X POST http://localhost:8091/dashboard \
 7. **`home/security/gateway_{family_id}/auth_sync` 是死代碼**：`respond_invitation.py`/`generate_guest_qr.py`/`update_member_role.py` 都會發布到這個 topic，但沒有任何服務訂閱它，等同通知從未真正送達任何人（UC4.4 分權通知推播未實作）。
 8. **`control_device.py` 在 `mqtt` 模式下只有 lock/unlock 有對應的真實動作**：`ALLOWED_ACTIONS` 支援 9 種動作，但目前的 ESP32 韌體與 bridge 的 `ACTION_MAP` 只認得 `LOCK`/`UNLOCK`，其餘動作會在 bridge 被靜默丟棄（會記 log，但呼叫端拿到的是「已發布」的樂觀回應，不會知道實際上沒有送達裝置）。
 9. **`mqtt_status_worker.py` 在目前拓樸下未被使用**：它假設的 `home/{family_id}/device/{device_id}/status` topic 從未被任何發布者使用；真正生效的是 `mqtt_topic_bridge.py`。保留此檔案是因為它是「若未來改用該慣例」的可用參考實作，非本次整合刻意選擇的路徑。
-10. **開發用資料庫密碼寫死在 `docker-compose.yml`**（`devroot123`/`devpass123`）：正式環境部署前必須更換，並考慮改用 Docker secrets 或外部 `.env` 檔案而非直接寫在 compose 檔裡。
-11. **MQTT 目前只有加密（TLS）沒有身份驗證**：`mosquitto.conf` 仍是 `allow_anonymous true`，任何能連上 broker 網段的裝置都能發布/訂閱任意 topic（只是連線內容加密，無法被竊聽/竄改，但沒有「你是誰」的驗證）。
+10. **（2026-10-25 已解決：密碼改由 `.env` 提供）開發用資料庫密碼寫死在 `docker-compose.yml`**（`devroot123`/`devpass123`）：正式環境部署前必須更換，並考慮改用 Docker secrets 或外部 `.env` 檔案而非直接寫在 compose 檔裡。
+11. **（2026-10-26 已解決：關閉匿名，改用帳密＋ACL，見 `config/README_mqtt_auth.md`）MQTT 目前只有加密（TLS）沒有身份驗證**：`mosquitto.conf` 仍是 `allow_anonymous true`，任何能連上 broker 網段的裝置都能發布/訂閱任意 topic（只是連線內容加密，無法被竊聽/竄改，但沒有「你是誰」的驗證）。
 12. **ECDH 配對在無真實 ESP32 時會模擬裝置端金鑰**（`device_pair.py` 的 `simulated_device=True` 分支）：這讓 UC2.1 的資料庫/稽核鏈路可以獨立於硬體驗證，但也代表「裝置真的擁有對應 private key」這件事在模擬模式下沒有被驗證——真實部署時必須確保 ESP32 端會傳入自己的 `device_public_key_pem`，否則配對記錄只是自欺欺人。
 13. **UC5.1 維修模式沒有硬體診斷埠、也沒有條件式自動觸發**：`maintenance_mode.py` 只做「Admin 手動開關＋強制設定最長有效時間＋到期自動恢復」，UC 原始描述裡「對外開放受限的硬體診斷埠」需要 ESP32 韌體實際開一個限定存取的除錯介面，這部分完全沒有實作（也還沒有能驗證的硬體）；「依設定條件觸發」（例如低電量、異常感測自動進入維修模式）也還沒有規則引擎去支援。
 14. **維修模式自動恢復有最多 `MAINTENANCE_SWEEP_INTERVAL_SECONDS`（預設 60 秒）的延遲窗口**：`api-mqtt-bridge` 的背景 sweep 是輪詢式而非精準計時器，理論上一個裝置的維修模式可能在到期後最多晚 60 秒才被 sweep 清除；`control_device.py` 有做 lazy-expiry 補洞（見第 7.4 節），但只補了「控制指令」這條路徑——如果之後有其他地方也需要即時反映維修狀態（例如即時通知），一樣需要各自補上同樣的過期檢查，而不是假設 `devices.maintenance_mode` 欄位本身永遠即時準確。
+
+## 12. 後續新增模組（10 月）
+
+本白皮書第 1～11 節以 8 月版的 14 個端點為主。之後新增的模組在這裡列出入口，細節見各目錄的 README 與 `API/CHANGES_2026-10-24.md`。
+
+### 12.1 閘道器初始化與跨場域信任（UC1.3／UC1.4）
+
+- `API/gateway_initialization/`：`/gateway_initialize`、`/gateway_initialization_status`。初始化時寫入待上鏈事件。
+- `API/gateway_collaboration/`：`/create_gateway_trust`、`/confirm_gateway_trust`、`/list_gateway_trusts`、`/revoke_gateway_trust`。
+- `provision_gateway_identity.py` 是在 Gateway 本機執行的 CLI 佈建工具，不是 HTTP 端點。
+
+### 12.2 帳本橋接（Ledger Bridge）
+
+業務 API 在同一個 MySQL transaction 內寫入 `ledger_events(status=PENDING)`（`API/common/ledger_event_service.py`），本模組不直接送資料上 IOTA。外部的 Ledger Worker（`Eva0630/IOTA_cassette`）透過下列端點領取與回報，全部需要 `Authorization: Bearer $LEDGER_WORKER_TOKEN`（至少 32 字元，放在 `.ledger.env`，由 `docker-compose.ledger.yml` 載入）：
+
+| 端點 | 用途 |
+| :-- | :-- |
+| `GET /ledger/health` | 各狀態事件筆數 |
+| `POST /ledger/claim` | 以租約（lease）領取 PENDING、到期 RETRY 或租約過期的事件；`preview=true` 只讀不改 |
+| `POST /ledger/{event_id}/submitted` | 回報已送出（帶 claim_token） |
+| `POST /ledger/{event_id}/confirm` | 回報已確認 |
+| `POST /ledger/{event_id}/fail` | 回報失敗（進 RETRY 或 DEAD_LETTER） |
+
+實作在 `API/ledger_bridge/`；`migrate.py` 會補上租約欄位與 `ledger_bridge_receipts`（讓重複回報不會重複生效）。
+
+### 12.3 訪客令牌、推播與帳號
+
+- 訪客：`/generate_guest_qr` 改發 `guest_tokens`，訪客經 `API/guest_page/` 開門頁呼叫 `/guest_access`；`/revoke_guest_token`、`list_guest_tokens.py` 管理令牌（UC3.4／UC3.5）。
+- 推播：`alert-service` 容器訂閱 `home/security/+/alert`，依場域推播到 App 與 Telegram／ntfy（UC4.4）。
+- 帳號：`/change_password`。登入仍不核發 Token（見第 11 節）。

@@ -34,6 +34,7 @@ API_ROOT = Path(__file__).resolve().parents[1]
 if str(API_ROOT) not in sys.path:
     sys.path.insert(0, str(API_ROOT))
 
+from common.audit_log_service import append_audit_log
 from common.ledger_event_service import (
     enqueue_ledger_event,
     get_ledger_event_by_dedup,
@@ -84,69 +85,40 @@ def stable_json(data: Dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def build_hash(command_id: str, operator_user_id: Optional[str], device_id: Optional[str], action: str,
-               parameters: Dict[str, Any], status: str, timestamp: int, prev_hash: Optional[str]) -> str:
-    raw = stable_json({
-        "command_id": command_id,
-        "operator_user_id": operator_user_id,
-        "device_id": device_id,
-        "action": action,
-        "parameters": parameters,
-        "status": status,
-        "timestamp": timestamp,
-        "prev_hash": prev_hash,
-    })
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
 def insert_audit_log(cursor, *, operator_user_id: Optional[str], device_id: Optional[str],
-                     action: str, parameters: Dict[str, Any], status: str) -> Dict[str, Any]:
-    """寫入 audit_logs；若舊資料庫沒有 audit_logs，略過但不中斷 UC2.3 主功能。"""
+                     action: str, parameters: Dict[str, Any], status: str,
+                     family_id: Optional[int] = None) -> Dict[str, Any]:
+    """寫入 audit_logs；若舊資料庫沒有 audit_logs，略過但不中斷 UC2.3 主功能。
+
+    雜湊鏈計算與鏈頭加鎖統一交給 common.audit_log_service，與業務更新共用同一 cursor /
+    transaction；這裡只保留 UC2.3 自己的 command_id 格式與回應格式。
+    """
     if not table_exists(cursor, "audit_logs"):
         return {"written": False, "reason": "audit_logs table not found"}
 
-    audit_cols = get_columns(cursor, "audit_logs")
     timestamp = int(time.time())
     safe_action = re.sub(r"[^A-Za-z0-9_.:-]", "_", action)[:32]
     command_id = f"{safe_action}-{timestamp}-{uuid.uuid4().hex[:8]}"
 
-    cursor.execute("SELECT current_hash FROM audit_logs ORDER BY `timestamp` DESC LIMIT 1")
-    last_log = cursor.fetchone()
-    prev_hash = last_log["current_hash"] if last_log and last_log.get("current_hash") else "0" * 64
-    current_hash = build_hash(command_id, operator_user_id, device_id, action, parameters, status, timestamp, prev_hash)
-
-    insert_cols: list[str] = []
-    values: list[Any] = []
-
-    def add_if_exists(col: str, value: Any) -> None:
-        if col in audit_cols:
-            insert_cols.append(col)
-            values.append(value)
-
-    add_if_exists("command_id", command_id)
-    add_if_exists("user_id", operator_user_id)
-    # 不使用 u_id，避免把 UC2.3 實作綁死在使用者身分驗證流程上。
-    add_if_exists("device_id", device_id)
-    add_if_exists("action", action)
-    add_if_exists("parameters", stable_json(parameters))
-    add_if_exists("status", status)
-    add_if_exists("timestamp", timestamp)
-    add_if_exists("prev_hash", prev_hash)
-    add_if_exists("current_hash", current_hash)
-
-    if not insert_cols:
-        return {"written": False, "reason": "audit_logs has no supported columns"}
-
-    placeholders = ", ".join(["%s"] * len(insert_cols))
-    col_sql = ", ".join([f"`{c}`" for c in insert_cols])
-    cursor.execute(f"INSERT INTO audit_logs ({col_sql}) VALUES ({placeholders})", values)
+    audit = append_audit_log(
+        cursor,
+        command_id=command_id,
+        actor_id=operator_user_id,
+        actor_type="USER",
+        family_id=family_id,
+        device_id=device_id,
+        action=action,
+        parameters=parameters,
+        status=status,
+        decision="DENY" if status == "Denied" else "ALLOW",
+    )
 
     return {
         "written": True,
-        "command_id": command_id,
-        "prev_hash": prev_hash,
-        "current_hash": current_hash,
-        "timestamp": timestamp,
+        "command_id": audit["command_id"],
+        "prev_hash": audit["prev_hash"],
+        "current_hash": audit["current_hash"],
+        "timestamp": audit["timestamp"],
     }
 
 
@@ -283,6 +255,7 @@ def main() -> None:
                     action="UC2.3_DEVICE_DECOMMISSION_NOOP",
                     parameters={"reason": reason, "old_status": old_status, "old_pairing_status": old_pairing_status},
                     status="Verified",
+                    family_id=family_id,
                 )
                 existing_ledger = get_ledger_event_by_dedup(cursor, dedup_key)
                 conn.commit()
@@ -354,6 +327,7 @@ def main() -> None:
                 action="UC2.3_DEVICE_DECOMMISSION",
                 parameters=audit_params,
                 status="Verified",
+                family_id=family_id,
             )
 
             ledger_event = enqueue_ledger_event(

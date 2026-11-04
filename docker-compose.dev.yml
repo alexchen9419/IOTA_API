@@ -25,7 +25,7 @@ services:
     environment:
       MQTT_PORT: "1883"
       MQTT_USE_TLS: "0"
-      OTA_HOST: "192.168.50.234"
+      OTA_HOST: ${OTA_HOST:?Set OTA_HOST in .env}
 
   api-mqtt-bridge:
     environment:

@@ -26,15 +26,20 @@ mosquitto 起不來，**8883 不會有人在聽**，而韌體預設就是連 888
 
 ### 2. 韌體裡的 broker IP 是舊的
 
-`Arduino/MqttSmartLock/MqttSmartLock.ino`：
+韌體設定改放在 `Arduino/MqttSmartLock/secrets.h`（不進版控）。第一次先把同資料夾的 `secrets.example.h` 複製成 `secrets.h`：
 
 ```cpp
-const char* MQTT_BROKER = "192.168.1.3";   // ← 改成 192.168.50.234
+const char* MQTT_BROKER = "192.168.0.84";   // ← 改成跑 Docker 那台機器的區網 IP
+const char* MQTT_PASS = "CHANGE_ME";        // ← 改成 .env 的 MQTT_DEVICE_PASSWORD
 ```
+
+同一個 IP 也要填進 repo 根目錄 `.env` 的 `OTA_HOST`。
 
 不能填 `127.0.0.1` 或 `localhost` —— 那是 ESP32 自己。
 
 ### 3. WiFi 帳密還是佔位字串
+
+一樣在 `secrets.h`：
 
 ```cpp
 const char* WIFI_SSID = "SSID";   // ← 改成真的
